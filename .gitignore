@@ -1,0 +1,18 @@
+.zig-cache/
+zig-out/
+
+# Local environment and Compose overrides.
+.env
+.env.*
+!.env.example
+compose.override.yaml
+compose.override.yml
+
+# Machine-local mise configuration.
+mise.local.toml
+
+# Editor, OS, and runtime artifacts.
+.DS_Store
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+pid=""
+
+stop_server() {
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        pid=""
+    fi
+}
+
+start_server() {
+    stop_server
+    if zig build; then
+        ./zig-out/bin/thing-for-doing-next &
+        pid="$!"
+    fi
+}
+
+trap 'stop_server; exit 0' INT TERM
+
+start_server
+while inotifywait --quiet --recursive --event close_write,create,delete,move src build.zig; do
+    start_server
+done
