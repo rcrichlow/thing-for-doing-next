@@ -55,13 +55,15 @@ docker compose down --volumes
 
 ## Local Development Commands
 
-With Zig 0.16.0 installed locally:
+With Zig 0.16.0 and libpq installed locally:
 
 ```bash
 zig build test
 zig build
-zig build run
+DATABASE_URL=postgresql://thing_for_doing:thing_for_doing@localhost:5433/thing_for_doing_next zig build run
 ```
+
+Local `zig build test` skips database integration tests unless `TEST_DATABASE_URL` points at a database whose name ends in `_test`.
 
 The container image pins Zig 0.16.0. Keep local Zig aligned before relying on local builds.
 
@@ -71,9 +73,15 @@ Run the test suite in the development container with:
 mise run test
 ```
 
-## Database Migrations
+## Database
 
-`migrations/001_initialize.sql` only establishes migration bookkeeping. PostgreSQL runs initialization scripts on the first creation of its data volume. This is intentionally temporary: before adding application tables, select and validate a Zig PostgreSQL client and implement an application-owned migration runner. Do not treat Docker initialization scripts as the long-term migration mechanism.
+The app requires `DATABASE_URL` (a libpq connection string or `postgresql://` URI) and exits at startup if the database is unreachable or a migration fails. Compose sets it for both app services.
+
+The PostgreSQL client is a thin libpq wrapper in `src/db.zig`, deliberately shaped like [pg.zig](https://github.com/karlseguin/pg.zig) so it can be replaced without changing callers.
+
+Migrations live in `migrations/*.sql`, are embedded into the binary at build time, and are applied in filename order on startup. Each migration runs in its own transaction and is recorded in `schema_migrations`. Migrations are forward-only; add a new file rather than editing an applied one.
+
+`mise run test` also runs database integration tests against a separate `thing_for_doing_next_test` database, which it creates when missing.
 
 ## Product Direction
 

@@ -5,7 +5,7 @@ ARG TAILWIND_VERSION=4.1.18
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl libpq-dev xz-utils \
+    && apt-get install --no-install-recommends -y ca-certificates curl libpq-dev pkgconf xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && case "$TARGETARCH" in amd64) zig_arch=x86_64 ;; arm64) zig_arch=aarch64 ;; *) exit 1 ;; esac \
     && curl --fail --location "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
@@ -17,6 +17,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY build.zig ./
+COPY migrations ./migrations
 COPY src ./src
 RUN tailwindcss --input src/public/input.css --output src/public/app.css --minify \
     && zig build -Doptimize=ReleaseSafe

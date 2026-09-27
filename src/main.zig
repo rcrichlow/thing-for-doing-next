@@ -1,6 +1,9 @@
 const std = @import("std");
+const db = @import("db.zig");
 const form = @import("form.zig");
 const layout = @import("layout.zig");
+const migrate = @import("migrate.zig");
+const migrations = @import("migrations");
 const template = @import("template.zig");
 
 const Io = std.Io;
@@ -18,6 +21,9 @@ const BoardsPage = template.Template(@embedFile("public/pages/boards.html"));
 /// process-wide to every `concurrent` task, so it caps open connections and any
 /// other concurrent work together.
 const max_concurrent_tasks = 16;
+/// One database connection per possible concurrent request, so a request that
+/// holds at most one connection never waits for the pool.
+const db_pool_size = max_concurrent_tasks;
 /// Largest request body accepted by `Context.readBody`.
 const max_body_bytes = 64 * 1024;
 /// Per-connection arena memory kept between requests on a keep-alive connection.
@@ -25,15 +31,23 @@ const retained_arena_bytes = 256 * 1024;
 
 const Config = struct {
     port: u16,
+    database_url: [:0]const u8,
 
     fn fromEnvironment() !Config {
-        const port_text = std.c.getenv("PORT") orelse return parse(null);
-        return parse(std.mem.span(port_text));
+        const database_url = std.c.getenv("DATABASE_URL") orelse {
+            std.log.err("DATABASE_URL is not set", .{});
+            return error.MissingDatabaseUrl;
+        };
+        const port_text = std.c.getenv("PORT");
+        return .{
+            .port = try parsePort(if (port_text) |text| std.mem.span(text) else null),
+            .database_url = std.mem.span(database_url),
+        };
     }
 
-    fn parse(port_text: ?[]const u8) !Config {
-        const text = port_text orelse return .{ .port = 3000 };
-        return .{ .port = try std.fmt.parseInt(u16, text, 10) };
+    fn parsePort(port_text: ?[]const u8) !u16 {
+        const text = port_text orelse return 3000;
+        return std.fmt.parseInt(u16, text, 10);
     }
 };
 
@@ -46,6 +60,11 @@ pub fn main() !void {
     const io = threaded.io();
 
     const config = try Config.fromEnvironment();
+
+    const pool = try db.Pool.init(io, gpa, .{ .url = config.database_url, .size = db_pool_size });
+    defer pool.deinit();
+    try runMigrations(pool);
+
     const address = try Io.net.IpAddress.parse("0.0.0.0", config.port);
     var listener = try address.listen(io, .{ .reuse_address = true });
     defer listener.deinit(io);
@@ -53,13 +72,37 @@ pub fn main() !void {
     var connections: Io.Group = .init;
     defer connections.cancel(io);
 
+    const app: App = .{ .io = io, .gpa = gpa, .pool = pool };
     std.log.info("listening on http://0.0.0.0:{d}", .{config.port});
     while (true) {
         const stream = try listener.accept(io);
-        connections.concurrent(io, handleConnection, .{ io, gpa, stream }) catch |err| switch (err) {
+        connections.concurrent(io, handleConnection, .{ &app, stream }) catch |err| switch (err) {
             error.ConcurrencyUnavailable => rejectAtCapacity(io, stream),
         };
     }
+}
+
+/// Process-wide state shared by every connection task.
+const App = struct {
+    io: Io,
+    gpa: Allocator,
+    pool: *db.Pool,
+};
+
+fn runMigrations(pool: *db.Pool) !void {
+    const conn = try pool.acquire();
+    defer conn.release();
+
+    var diagnostics: migrate.Diagnostics = .{};
+    const applied = migrate.run(conn, &migrations.all, &diagnostics) catch |err| {
+        if (diagnostics.failed_version) |version| {
+            std.log.err("migration {s} failed: {t} {s} {s}", .{ version, err, diagnostics.code(), diagnostics.message() });
+        } else {
+            std.log.err("running migrations failed: {t}", .{err});
+        }
+        return err;
+    };
+    std.log.info("migrations up to date ({d} applied, {d} total)", .{ applied, migrations.all.len });
 }
 
 /// Answers a connection that could not be scheduled with 503 and closes it.
@@ -85,11 +128,12 @@ fn rejectAtCapacity(io: Io, stream: Io.net.Stream) void {
     stream.shutdown(io, .send) catch {};
 }
 
-fn handleConnection(io: Io, gpa: Allocator, stream: Io.net.Stream) void {
-    serveConnection(io, gpa, stream) catch |err| std.log.err("connection failed: {t}", .{err});
+fn handleConnection(app: *const App, stream: Io.net.Stream) void {
+    serveConnection(app, stream) catch |err| std.log.err("connection failed: {t}", .{err});
 }
 
-fn serveConnection(io: Io, gpa: Allocator, stream: Io.net.Stream) !void {
+fn serveConnection(app: *const App, stream: Io.net.Stream) !void {
+    const io = app.io;
     defer stream.close(io);
 
     var receive_buffer: [4096]u8 = undefined;
@@ -98,7 +142,7 @@ fn serveConnection(io: Io, gpa: Allocator, stream: Io.net.Stream) !void {
     var writer = stream.writer(io, &send_buffer);
     var server = http.Server.init(&reader.interface, &writer.interface);
 
-    var arena: std.heap.ArenaAllocator = .init(gpa);
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
     defer arena.deinit();
 
     while (server.reader.state == .ready) {
@@ -107,7 +151,7 @@ fn serveConnection(io: Io, gpa: Allocator, stream: Io.net.Stream) !void {
             error.HttpConnectionClosing => return,
             else => return err,
         };
-        try handleRequest(arena.allocator(), &request);
+        try handleRequest(arena.allocator(), &request, app.pool);
     }
 }
 
@@ -124,7 +168,7 @@ fn clientErrorStatus(err: anyerror) ?http.Status {
 
 /// Responds to a single request. Handlers render into memory and respond
 /// last, so any error they return means no response bytes have been written.
-fn handleRequest(arena: Allocator, request: *Request) !void {
+fn handleRequest(arena: Allocator, request: *Request, pool: ?*db.Pool) !void {
     // std.http.Server asserts when discarding a body with no declared length,
     // so such requests must be answered without keep-alive before routing.
     if (request.head.method.requestHasBody() and
@@ -134,7 +178,8 @@ fn handleRequest(arena: Allocator, request: *Request) !void {
         return respondError(request, .length_required);
     }
 
-    var ctx = try Context.init(arena, request);
+    var ctx = try Context.init(arena, request, pool);
+    defer ctx.deinit();
     route(&ctx) catch |err| switch (err) {
         error.WriteFailed => return err,
         error.HttpExpectationFailed => {
@@ -144,6 +189,9 @@ fn handleRequest(arena: Allocator, request: *Request) !void {
         else => {
             if (clientErrorStatus(err)) |status| return respondError(request, status);
             std.log.err("{t} {s} failed: {t}", .{ ctx.method, ctx.path, err });
+            if (ctx.db_conn) |conn| if (conn.err) |pg_err| {
+                std.log.err("PostgreSQL {s}: {s}", .{ pg_err.code, pg_err.message });
+            };
             return respondError(request, .internal_server_error);
         },
     };
@@ -173,10 +221,13 @@ const Context = struct {
     /// Raw query string without the leading `?`; empty if absent.
     query: []const u8,
     content_type: ?[]const u8,
+    db_pool: ?*db.Pool,
+    /// Acquired on first use by `dbConn` and released after the response.
+    db_conn: ?*db.Conn = null,
 
     /// Copies the request head strings into `arena`, since reading the body
     /// invalidates them.
-    fn init(arena: Allocator, request: *Request) Allocator.Error!Context {
+    fn init(arena: Allocator, request: *Request, db_pool: ?*db.Pool) Allocator.Error!Context {
         const target = request.head.target;
         const query_start = std.mem.indexOfScalar(u8, target, '?');
         return .{
@@ -186,7 +237,22 @@ const Context = struct {
             .path = try arena.dupe(u8, if (query_start) |i| target[0..i] else target),
             .query = try arena.dupe(u8, if (query_start) |i| target[i + 1 ..] else ""),
             .content_type = if (request.head.content_type) |value| try arena.dupe(u8, value) else null,
+            .db_pool = db_pool,
         };
+    }
+
+    fn deinit(ctx: *Context) void {
+        if (ctx.db_conn) |conn| conn.release();
+        ctx.db_conn = null;
+    }
+
+    /// Returns this request's database connection, acquiring it on first use.
+    /// Handlers pass it to query modules and never hold a second connection.
+    fn dbConn(ctx: *Context) !*db.Conn {
+        if (ctx.db_conn) |conn| return conn;
+        const pool = ctx.db_pool orelse return error.DatabaseUnavailable;
+        ctx.db_conn = try pool.acquire();
+        return ctx.db_conn.?;
     }
 
     fn queryForm(ctx: *const Context) form.ParseError!form.Form {
@@ -331,8 +397,10 @@ fn route(ctx: *Context) !void {
 }
 
 test {
+    _ = db;
     _ = form;
     _ = layout;
+    _ = migrate;
     _ = template;
 }
 
@@ -347,7 +415,7 @@ fn testRequest(raw_request: []const u8, out_buffer: []u8) ![]const u8 {
     var out: Io.Writer = .fixed(out_buffer);
     var server = http.Server.init(&in, &out);
     var request = try server.receiveHead();
-    try handleRequest(arena.allocator(), &request);
+    try handleRequest(arena.allocator(), &request, null);
     return out.buffered();
 }
 
@@ -440,7 +508,7 @@ const TestContext = struct {
         self.out = .fixed(&self.out_buffer);
         self.server = http.Server.init(&self.in, &self.out);
         self.request = try self.server.receiveHead();
-        self.ctx = try Context.init(self.arena.allocator(), &self.request);
+        self.ctx = try Context.init(self.arena.allocator(), &self.request, null);
     }
 
     fn deinit(self: *TestContext) void {
@@ -516,16 +584,27 @@ test "path params capture one segment" {
 }
 
 test "port defaults to 3000 without PORT" {
-    const config = try Config.parse(null);
-    try testing.expectEqual(@as(u16, 3000), config.port);
+    try testing.expectEqual(@as(u16, 3000), try Config.parsePort(null));
 }
 
 test "port is parsed from PORT" {
-    const config = try Config.parse("8080");
-    try testing.expectEqual(@as(u16, 8080), config.port);
+    try testing.expectEqual(@as(u16, 8080), try Config.parsePort("8080"));
 }
 
 test "invalid PORT is rejected" {
-    try testing.expectError(error.InvalidCharacter, Config.parse("abc"));
-    try testing.expectError(error.Overflow, Config.parse("70000"));
+    try testing.expectError(error.InvalidCharacter, Config.parsePort("abc"));
+    try testing.expectError(error.Overflow, Config.parsePort("70000"));
+}
+
+test "database access without a pool is a server error" {
+    var t: TestContext = undefined;
+    try t.init("GET / HTTP/1.1\r\nHost: test\r\n\r\n");
+    defer t.deinit();
+    try testing.expectError(error.DatabaseUnavailable, t.ctx.dbConn());
+}
+
+test "embedded migrations are sorted and unique" {
+    for (migrations.all[0..], 0..) |migration, i| {
+        if (i > 0) try testing.expect(std.mem.lessThan(u8, migrations.all[i - 1].version, migration.version));
+    }
 }
