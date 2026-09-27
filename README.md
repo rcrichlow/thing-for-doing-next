@@ -27,6 +27,12 @@ The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.c
 
 HTMX is vendored in `src/public/htmx-4.0.0-beta6.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta6/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`. It is embedded directly as JavaScript and served at `/assets/htmx-4.0.0-beta6.min.js` with immutable caching. When upgrading HTMX, update the versioned filename, embedded asset route, and script URL together.
 
+## HTTP Server Limits
+
+- At most 16 connections are served concurrently; further connections receive `503 Service Unavailable` and are closed.
+- Idle keep-alive connections are not timed out yet, so each holds a slot until the client closes it. Revisit before exposing the app beyond local use.
+- Request bodies are limited to 64 KiB and must be `application/x-www-form-urlencoded`, which matches HTMX's default encoding.
+
 ## Production Image
 
 Build and run the production-style image with:
