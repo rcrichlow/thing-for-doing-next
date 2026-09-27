@@ -23,7 +23,7 @@ mise run dev
 
 The development container mounts the source tree. Changes to `src/` or `build.zig` rebuild and restart only the app process; the database container and application container remain running.
 
-The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/app.css` with `Cache-Control: no-cache` so browsers revalidate it on each use.
+The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/styles.css` with `Cache-Control: no-cache` so browsers revalidate it on each use. Don't serve it at `/assets/app.css`: an early build sent that URL with year-long immutable caching, so browsers that loaded it would keep using a stale copy.
 
 HTMX is vendored in `src/public/htmx-4.0.0-beta6.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta6/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`. It is embedded directly as JavaScript and served at `/assets/htmx-4.0.0-beta6.min.js` with immutable caching. When upgrading HTMX, update the versioned filename, embedded asset route, and script URL together.
 
@@ -73,6 +73,16 @@ Run the test suite in the development container with:
 mise run test
 ```
 
+## Working Memory
+
+The home page lists working-memory entries, newest first.
+
+- Type anywhere on the page to open the composer. Enter saves, Shift+Enter adds a line, and Escape or clicking outside discards the draft.
+- Click an entry to edit it. Enter or clicking away saves, Escape cancels, and saving empty text keeps the original.
+- The trash icon deletes an entry and Clear All deletes every entry; both ask for confirmation.
+
+The keyboard behaviour is in `src/public/app.js`, a small dependency-free script with JSDoc types. HTMX makes every request.
+
 ## Database
 
 The app requires `DATABASE_URL` (a libpq connection string or `postgresql://` URI) and exits at startup if the database is unreachable or a migration fails. Compose sets it for both app services.
@@ -93,7 +103,7 @@ The target workflows are:
 - Boards, lists, and cards, including inline titles, card details, archived boards, and list deletion with optional card transfer.
 - Drag-and-drop card reordering within and between lists.
 
-Build the working-memory vertical slice first. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
+Working Memory is implemented, apart from sending an entry to a board, which waits for boards. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
 
 ## Inspiration
 

@@ -1,20 +1,23 @@
 const std = @import("std");
 const db = @import("db.zig");
 const form = @import("form.zig");
+const http = @import("http.zig");
 const layout = @import("layout.zig");
 const migrate = @import("migrate.zig");
 const migrations = @import("migrations");
 const template = @import("template.zig");
+const working_memory = @import("handlers/working_memory.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const http = std.http;
-const Request = http.Server.Request;
+const Context = http.Context;
+const Request = http.Request;
+const Status = std.http.Status;
+const pathParam = http.pathParam;
 
-const app_title = "Thing for Doing Next";
 const app_css = @embedFile("public/app.css");
+const app_js = @embedFile("public/app.js");
 const htmx_js = @embedFile("public/htmx-4.0.0-beta6.min.js");
-const WorkingMemoryPage = template.Template(@embedFile("public/pages/working-memory.html"));
 const BoardsPage = template.Template(@embedFile("public/pages/boards.html"));
 
 /// Upper bound on concurrently running tasks. `Io.Threaded` applies this limit
@@ -24,8 +27,6 @@ const max_concurrent_tasks = 16;
 /// One database connection per possible concurrent request, so a request that
 /// holds at most one connection never waits for the pool.
 const db_pool_size = max_concurrent_tasks;
-/// Largest request body accepted by `Context.readBody`.
-const max_body_bytes = 64 * 1024;
 /// Per-connection arena memory kept between requests on a keep-alive connection.
 const retained_arena_bytes = 256 * 1024;
 
@@ -140,7 +141,7 @@ fn serveConnection(app: *const App, stream: Io.net.Stream) !void {
     var send_buffer: [4096]u8 = undefined;
     var reader = stream.reader(io, &receive_buffer);
     var writer = stream.writer(io, &send_buffer);
-    var server = http.Server.init(&reader.interface, &writer.interface);
+    var server = std.http.Server.init(&reader.interface, &writer.interface);
 
     var arena: std.heap.ArenaAllocator = .init(app.gpa);
     defer arena.deinit();
@@ -157,7 +158,7 @@ fn serveConnection(app: *const App, stream: Io.net.Stream) !void {
 
 /// Maps errors a handler may return to 4xx statuses. Any other error becomes a
 /// 500, except `WriteFailed`, which means the client is gone.
-fn clientErrorStatus(err: anyerror) ?http.Status {
+fn clientErrorStatus(err: anyerror) ?Status {
     return switch (err) {
         error.PayloadTooLarge => .payload_too_large,
         error.UnsupportedMediaType => .unsupported_media_type,
@@ -199,162 +200,14 @@ fn handleRequest(arena: Allocator, request: *Request, pool: ?*db.Pool) !void {
 
 /// Sends a plain-text error and closes the connection, since the state of any
 /// request body is unknown.
-fn respondError(request: *Request, status: http.Status) Request.ExpectContinueError!void {
+fn respondError(request: *Request, status: Status) Request.ExpectContinueError!void {
     var body_buffer: [64]u8 = undefined;
     const body = std.fmt.bufPrint(&body_buffer, "{s}\n", .{status.phrase() orelse "error"}) catch unreachable;
     return request.respond(body, .{
         .status = status,
         .keep_alive = false,
-        .extra_headers = &.{.{ .name = "content-type", .value = text_type }},
+        .extra_headers = &.{.{ .name = "content-type", .value = http.text_type }},
     });
-}
-
-const text_type = "text/plain; charset=utf-8";
-const html_type = "text/html; charset=utf-8";
-
-const Context = struct {
-    arena: Allocator,
-    request: *Request,
-    method: http.Method,
-    /// Target path without the query string. Not percent-decoded.
-    path: []const u8,
-    /// Raw query string without the leading `?`; empty if absent.
-    query: []const u8,
-    content_type: ?[]const u8,
-    db_pool: ?*db.Pool,
-    /// Acquired on first use by `dbConn` and released after the response.
-    db_conn: ?*db.Conn = null,
-
-    /// Copies the request head strings into `arena`, since reading the body
-    /// invalidates them.
-    fn init(arena: Allocator, request: *Request, db_pool: ?*db.Pool) Allocator.Error!Context {
-        const target = request.head.target;
-        const query_start = std.mem.indexOfScalar(u8, target, '?');
-        return .{
-            .arena = arena,
-            .request = request,
-            .method = request.head.method,
-            .path = try arena.dupe(u8, if (query_start) |i| target[0..i] else target),
-            .query = try arena.dupe(u8, if (query_start) |i| target[i + 1 ..] else ""),
-            .content_type = if (request.head.content_type) |value| try arena.dupe(u8, value) else null,
-            .db_pool = db_pool,
-        };
-    }
-
-    fn deinit(ctx: *Context) void {
-        if (ctx.db_conn) |conn| conn.release();
-        ctx.db_conn = null;
-    }
-
-    /// Returns this request's database connection, acquiring it on first use.
-    /// Handlers pass it to query modules and never hold a second connection.
-    fn dbConn(ctx: *Context) !*db.Conn {
-        if (ctx.db_conn) |conn| return conn;
-        const pool = ctx.db_pool orelse return error.DatabaseUnavailable;
-        ctx.db_conn = try pool.acquire();
-        return ctx.db_conn.?;
-    }
-
-    fn queryForm(ctx: *const Context) form.ParseError!form.Form {
-        return form.parse(ctx.arena, ctx.query);
-    }
-
-    /// Reads and decodes an `application/x-www-form-urlencoded` request body.
-    fn readForm(ctx: *Context) !form.Form {
-        const content_type = ctx.content_type orelse return error.UnsupportedMediaType;
-        const media_type = std.mem.trim(u8, content_type[0 .. std.mem.indexOfScalar(u8, content_type, ';') orelse content_type.len], " \t");
-        if (!std.ascii.eqlIgnoreCase(media_type, "application/x-www-form-urlencoded")) {
-            return error.UnsupportedMediaType;
-        }
-        return form.parse(ctx.arena, try ctx.readBody());
-    }
-
-    /// Reads the entire request body, up to `max_body_bytes`.
-    fn readBody(ctx: *Context) ![]const u8 {
-        const head = &ctx.request.head;
-        if (head.transfer_compression != .identity) return error.UnsupportedMediaType;
-        if (head.content_length) |length| {
-            if (length > max_body_bytes) return error.PayloadTooLarge;
-        }
-        // The server keeps a reference to this buffer until the body is
-        // consumed, so it must live as long as the request.
-        const transfer_buffer = try ctx.arena.alloc(u8, 1024);
-        const body_reader = try ctx.request.readerExpectContinue(transfer_buffer);
-        return body_reader.allocRemaining(ctx.arena, .limited(max_body_bytes)) catch |err| switch (err) {
-            error.StreamTooLong => error.PayloadTooLarge,
-            error.ReadFailed, error.OutOfMemory => |e| e,
-        };
-    }
-
-    fn respond(ctx: *Context, body: []const u8, options: ResponseOptions) Request.ExpectContinueError!void {
-        var headers: [3]http.Header = undefined;
-        var count: usize = 0;
-        headers[count] = .{ .name = "content-type", .value = options.content_type };
-        count += 1;
-        if (options.cache_control) |value| {
-            headers[count] = .{ .name = "cache-control", .value = value };
-            count += 1;
-        }
-        if (options.allow) |value| {
-            headers[count] = .{ .name = "allow", .value = value };
-            count += 1;
-        }
-        return ctx.request.respond(body, .{ .status = options.status, .extra_headers = headers[0..count] });
-    }
-
-    fn methodNotAllowed(ctx: *Context, allow: []const u8) Request.ExpectContinueError!void {
-        return ctx.respond("method not allowed\n", .{
-            .status = .method_not_allowed,
-            .content_type = text_type,
-            .allow = allow,
-        });
-    }
-
-    /// Renders `Body` inside the shared layout and responds with the result.
-    fn page(
-        ctx: *Context,
-        active: ?layout.Section,
-        comptime Body: type,
-        values: anytype,
-    ) (Allocator.Error || Request.ExpectContinueError)!void {
-        var html: Io.Writer.Allocating = .init(ctx.arena);
-        // Writing to an allocating writer only fails when allocation fails.
-        renderPage(&html.writer, active, Body, values) catch return error.OutOfMemory;
-        return ctx.respond(html.written(), .{ .content_type = html_type });
-    }
-};
-
-const ResponseOptions = struct {
-    status: http.Status = .ok,
-    content_type: []const u8,
-    cache_control: ?[]const u8 = null,
-    allow: ?[]const u8 = null,
-};
-
-fn renderPage(writer: *Io.Writer, active: ?layout.Section, comptime Body: type, values: anytype) Io.Writer.Error!void {
-    try layout.writeStart(writer, .{ .title = app_title, .active = active });
-    try Body.render(writer, values);
-    try layout.writeEnd(writer);
-}
-
-/// Returns the segment captured by the single `{name}` placeholder in
-/// `pattern` if `path` matches, or null. Captures never contain `/`.
-fn pathParam(comptime pattern: []const u8, path: []const u8) ?[]const u8 {
-    const open = comptime std.mem.indexOfScalar(u8, pattern, '{') orelse
-        @compileError("pathParam pattern needs a {name} placeholder; compare static paths directly");
-    const close = comptime std.mem.indexOfScalarPos(u8, pattern, open, '}') orelse
-        @compileError("unclosed placeholder in route pattern");
-    const prefix = pattern[0..open];
-    const suffix = pattern[close + 1 ..];
-    comptime if (std.mem.indexOfScalar(u8, suffix, '{') != null) {
-        @compileError("route patterns support a single placeholder");
-    };
-
-    if (path.len <= prefix.len + suffix.len) return null;
-    if (!std.mem.startsWith(u8, path, prefix) or !std.mem.endsWith(u8, path, suffix)) return null;
-    const segment = path[prefix.len .. path.len - suffix.len];
-    if (std.mem.indexOfScalar(u8, segment, '/') != null) return null;
-    return segment;
 }
 
 const read_methods = "GET, HEAD";
@@ -367,41 +220,65 @@ fn route(ctx: *Context) !void {
         else => ctx.methodNotAllowed(read_methods),
     };
 
-    if (std.mem.eql(u8, path, "/assets/app.css")) return switch (ctx.method) {
-        .GET, .HEAD => ctx.respond(app_css, .{
-            .content_type = "text/css; charset=utf-8",
-            .cache_control = "no-cache",
-        }),
-        else => ctx.methodNotAllowed(read_methods),
-    };
-
-    if (std.mem.eql(u8, path, "/assets/htmx-4.0.0-beta6.min.js")) return switch (ctx.method) {
-        .GET, .HEAD => ctx.respond(htmx_js, .{
-            .content_type = "text/javascript; charset=utf-8",
-            .cache_control = "public, max-age=31536000, immutable",
-        }),
-        else => ctx.methodNotAllowed(read_methods),
-    };
+    // Not /assets/app.css: an early build served that URL as immutable, so
+    // browsers that loaded it keep a stale copy for a year.
+    if (std.mem.eql(u8, path, "/assets/styles.css")) return asset(ctx, app_css, "text/css; charset=utf-8", revalidate);
+    if (std.mem.eql(u8, path, "/assets/app.js")) return asset(ctx, app_js, js_type, revalidate);
+    if (std.mem.eql(u8, path, "/assets/htmx-4.0.0-beta6.min.js")) return asset(ctx, htmx_js, js_type, immutable);
 
     if (std.mem.eql(u8, path, "/")) return switch (ctx.method) {
-        .GET, .HEAD => ctx.page(.working_memory, WorkingMemoryPage, .{}),
+        .GET, .HEAD => working_memory.index(ctx),
         else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (std.mem.eql(u8, path, "/entries")) return switch (ctx.method) {
+        .POST => working_memory.create(ctx),
+        .DELETE => working_memory.clear(ctx),
+        else => ctx.methodNotAllowed("POST, DELETE"),
+    };
+
+    if (pathParam("/entries/{id}/edit", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => working_memory.edit(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/entries/{id}", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => working_memory.show(ctx, id),
+        .PUT => working_memory.update(ctx, id),
+        .DELETE => working_memory.destroy(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, PUT, DELETE"),
     };
 
     if (std.mem.eql(u8, path, "/boards")) return switch (ctx.method) {
-        .GET, .HEAD => ctx.page(.boards, BoardsPage, .{}),
+        .GET, .HEAD => ctx.page(.boards, BoardsPage.render, .{.{}}),
         else => ctx.methodNotAllowed(read_methods),
     };
 
-    return ctx.respond("not found\n", .{ .status = .not_found, .content_type = text_type });
+    return ctx.notFound();
+}
+
+const js_type = "text/javascript; charset=utf-8";
+/// First-party assets change with every build, so browsers revalidate them.
+const revalidate = "no-cache";
+/// Vendored assets carry their version in the URL.
+const immutable = "public, max-age=31536000, immutable";
+
+fn asset(ctx: *Context, body: []const u8, content_type: []const u8, cache_control: []const u8) !void {
+    return switch (ctx.method) {
+        .GET, .HEAD => ctx.respond(body, .{ .content_type = content_type, .cache_control = cache_control }),
+        else => ctx.methodNotAllowed(read_methods),
+    };
 }
 
 test {
     _ = db;
     _ = form;
+    _ = http;
     _ = layout;
     _ = migrate;
     _ = template;
+    _ = working_memory;
+    _ = @import("working_memory.zig");
 }
 
 const testing = std.testing;
@@ -413,7 +290,7 @@ fn testRequest(raw_request: []const u8, out_buffer: []u8) ![]const u8 {
     defer arena.deinit();
     var in: Io.Reader = .fixed(raw_request);
     var out: Io.Writer = .fixed(out_buffer);
-    var server = http.Server.init(&in, &out);
+    var server = std.http.Server.init(&in, &out);
     var request = try server.receiveHead();
     try handleRequest(arena.allocator(), &request, null);
     return out.buffered();
@@ -445,10 +322,39 @@ test "HEAD omits the body but keeps the length" {
 
 test "query strings do not affect routing" {
     var buffer: [16 * 1024]u8 = undefined;
-    const response = try testRequest("GET /?from=test HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    const response = try testRequest("GET /boards?from=test HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
     try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
     try expectHeader(response, "content-type: text/html; charset=utf-8\r\n");
-    try testing.expect(std.mem.indexOf(u8, response, "Working Memory</h1>") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "Boards</h1>") != null);
+}
+
+test "entry routes enforce methods and match ids" {
+    var buffer: [1024]u8 = undefined;
+    var response = try testRequest("PATCH /entries/1 HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 405 Method Not Allowed\r\n"));
+    try expectHeader(response, "allow: GET, HEAD, PUT, DELETE\r\n");
+    response = try testRequest("GET /entries HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: POST, DELETE\r\n");
+    response = try testRequest("GET /entries/1/2 HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 404 Not Found\r\n"));
+}
+
+test "serves the stylesheet with revalidation at its current URL" {
+    var buffer: [64 * 1024]u8 = undefined;
+    var response = try testRequest("GET /assets/styles.css HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
+    try expectHeader(response, "content-type: text/css; charset=utf-8\r\n");
+    try expectHeader(response, "cache-control: no-cache\r\n");
+    response = try testRequest("GET /assets/app.css HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 404 Not Found\r\n"));
+}
+
+test "serves first-party JavaScript with revalidation" {
+    var buffer: [64 * 1024]u8 = undefined;
+    const response = try testRequest("GET /assets/app.js HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
+    try expectHeader(response, "content-type: text/javascript; charset=utf-8\r\n");
+    try expectHeader(response, "cache-control: no-cache\r\n");
 }
 
 test "pages highlight their navigation section" {
@@ -485,102 +391,10 @@ test "body with a length is discarded for 405" {
 }
 
 test "client errors map to 4xx statuses" {
-    try testing.expectEqual(http.Status.payload_too_large, clientErrorStatus(error.PayloadTooLarge).?);
-    try testing.expectEqual(http.Status.unsupported_media_type, clientErrorStatus(error.UnsupportedMediaType).?);
-    try testing.expectEqual(http.Status.bad_request, clientErrorStatus(error.InvalidForm).?);
+    try testing.expectEqual(Status.payload_too_large, clientErrorStatus(error.PayloadTooLarge).?);
+    try testing.expectEqual(Status.unsupported_media_type, clientErrorStatus(error.UnsupportedMediaType).?);
+    try testing.expectEqual(Status.bad_request, clientErrorStatus(error.InvalidForm).?);
     try testing.expectEqual(null, clientErrorStatus(error.OutOfMemory));
-}
-
-/// Parses a raw request head and builds a Context for exercising body helpers.
-const TestContext = struct {
-    arena: std.heap.ArenaAllocator,
-    in: Io.Reader,
-    out: Io.Writer,
-    out_buffer: [256]u8,
-    server: http.Server,
-    request: Request,
-    ctx: Context,
-
-    fn init(self: *TestContext, raw_request: []const u8) !void {
-        self.arena = .init(testing.allocator);
-        errdefer self.arena.deinit();
-        self.in = .fixed(raw_request);
-        self.out = .fixed(&self.out_buffer);
-        self.server = http.Server.init(&self.in, &self.out);
-        self.request = try self.server.receiveHead();
-        self.ctx = try Context.init(self.arena.allocator(), &self.request, null);
-    }
-
-    fn deinit(self: *TestContext) void {
-        self.arena.deinit();
-    }
-};
-
-test "context splits path and query" {
-    var t: TestContext = undefined;
-    try t.init("GET /entries/7?sort=new&q=a+b HTTP/1.1\r\nHost: test\r\n\r\n");
-    defer t.deinit();
-    try testing.expectEqualStrings("/entries/7", t.ctx.path);
-    try testing.expectEqualStrings("sort=new&q=a+b", t.ctx.query);
-    const query = try t.ctx.queryForm();
-    try testing.expectEqualStrings("a b", query.get("q").?);
-}
-
-test "reads a urlencoded form body" {
-    var t: TestContext = undefined;
-    try t.init("POST /entries HTTP/1.1\r\nHost: test\r\n" ++
-        "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n" ++
-        "Content-Length: 22\r\n\r\nbody=first%0Asecond+it");
-    defer t.deinit();
-    const body = try t.ctx.readForm();
-    try testing.expectEqualStrings("first\nsecond it", body.get("body").?);
-    // Path must survive body reading invalidating the request head strings.
-    try testing.expectEqualStrings("/entries", t.ctx.path);
-}
-
-test "reads a chunked form body" {
-    var t: TestContext = undefined;
-    try t.init("PUT /entries/1 HTTP/1.1\r\nHost: test\r\n" ++
-        "Content-Type: application/x-www-form-urlencoded\r\n" ++
-        "Transfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n4\r\n=hey\r\n0\r\n\r\n");
-    defer t.deinit();
-    const body = try t.ctx.readForm();
-    try testing.expectEqualStrings("hey", body.get("body").?);
-}
-
-test "rejects non-form content types" {
-    var t: TestContext = undefined;
-    try t.init("POST /entries HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
-    defer t.deinit();
-    try testing.expectError(error.UnsupportedMediaType, t.ctx.readForm());
-}
-
-test "rejects oversized declared bodies" {
-    var t: TestContext = undefined;
-    try t.init("POST /entries HTTP/1.1\r\nHost: test\r\n" ++
-        "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 65537\r\n\r\n");
-    defer t.deinit();
-    try testing.expectError(error.PayloadTooLarge, t.ctx.readForm());
-}
-
-test "rejects oversized chunked bodies" {
-    const chunk = "a" ** 0x8000;
-    const raw = "POST /entries HTTP/1.1\r\nHost: test\r\n" ++
-        "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n" ++
-        "8000\r\n" ++ chunk ++ "\r\n8000\r\n" ++ chunk ++ "\r\n1\r\na\r\n0\r\n\r\n";
-    var t: TestContext = undefined;
-    try t.init(raw);
-    defer t.deinit();
-    try testing.expectError(error.PayloadTooLarge, t.ctx.readForm());
-}
-
-test "path params capture one segment" {
-    try testing.expectEqualStrings("42", pathParam("/entries/{id}", "/entries/42").?);
-    try testing.expectEqualStrings("42", pathParam("/entries/{id}/edit", "/entries/42/edit").?);
-    try testing.expectEqual(null, pathParam("/entries/{id}", "/entries/"));
-    try testing.expectEqual(null, pathParam("/entries/{id}", "/entries/42/edit"));
-    try testing.expectEqual(null, pathParam("/entries/{id}/edit", "/entries//edit"));
-    try testing.expectEqual(null, pathParam("/entries/{id}", "/boards/42"));
 }
 
 test "port defaults to 3000 without PORT" {
@@ -594,13 +408,6 @@ test "port is parsed from PORT" {
 test "invalid PORT is rejected" {
     try testing.expectError(error.InvalidCharacter, Config.parsePort("abc"));
     try testing.expectError(error.Overflow, Config.parsePort("70000"));
-}
-
-test "database access without a pool is a server error" {
-    var t: TestContext = undefined;
-    try t.init("GET / HTTP/1.1\r\nHost: test\r\n\r\n");
-    defer t.deinit();
-    try testing.expectError(error.DatabaseUnavailable, t.ctx.dbConn());
 }
 
 test "embedded migrations are sorted and unique" {

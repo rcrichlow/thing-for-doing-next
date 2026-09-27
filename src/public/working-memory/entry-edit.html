@@ -1,0 +1,38 @@
+<div id="entry-{{id}}" class="py-1" data-testid="wm-entry-{{id}}">
+    <div class="flex items-center gap-2">
+        <div class="flex shrink-0 items-center gap-1">
+            <button
+                type="button"
+                aria-label="Delete entry"
+                disabled
+                class="rounded-md p-1.5 text-red-500 opacity-50">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12m-9 0V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v11m4-11v11m5-11v11a2 2 0 01-2 2H8a2 2 0 01-2-2V7" />
+                </svg>
+            </button>
+        </div>
+        <form
+            class="min-w-0 flex-1"
+            data-entry-edit
+            hx-put="/entries/{{id}}"
+            hx-target="#entry-{{id}}"
+            hx-swap="outerHTML">
+            <textarea
+                name="content"
+                rows="1"
+                aria-label="Edit entry"
+                data-focus
+                data-autogrow
+                data-submit-on-enter
+                class="max-h-[60vh] w-full resize-none rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500">
+{{content}}</textarea>
+            <button
+                type="button"
+                hidden
+                data-entry-cancel
+                hx-get="/entries/{{id}}"
+                hx-target="#entry-{{id}}"
+                hx-swap="outerHTML"></button>
+        </form>
+    </div>
+</div>

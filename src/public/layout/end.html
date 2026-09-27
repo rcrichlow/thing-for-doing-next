@@ -1,5 +1,21 @@
                 </div>
             </main>
         </div>
+        <div
+            id="app-alert"
+            role="alert"
+            hidden
+            class="fixed bottom-4 right-4 z-50 flex max-w-sm items-start gap-3 rounded-md border-l-4 border-red-500 bg-zinc-900 px-4 py-3 text-sm text-red-200 shadow-lg">
+            <p data-alert-message>Something went wrong. Please try again.</p>
+            <button
+                type="button"
+                aria-label="Dismiss"
+                data-alert-dismiss
+                class="rounded p-0.5 text-red-300 transition-colors hover:bg-zinc-800 hover:text-red-100">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
     </body>
 </html>
