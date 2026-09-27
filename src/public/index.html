@@ -1,19 +1,43 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{title}}</title>
-    <script 
-        src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta6" 
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{title}}</title>
+        <link rel="stylesheet" href="/assets/app.css">
+        <script 
+            src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta6" 
         integrity="sha384-6lyVbhrs13b9z7mLOpt/N6R76rtkEBWgCjAXRs/DSWyi2AMnQSs10ijWk+PI8n7W" 
         crossorigin="anonymous">
-    </script>
-  </head>
-  <body>
-    <main>
-      <h1>{{heading}}</h1>
-      <p>{{message}}</p>
-    </main>
-  </body>
+        </script>
+    </head>
+    <body>
+        <div class="min-h-screen bg-zinc-950 flex flex-col">
+            <header class="bg-zinc-900 border-b border-zinc-800 shadow-sm">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="flex justify-between h-16">
+                        <div class="flex">
+                            <div class="flex-shrink-0 flex items-center">
+                                <a href="/" class="text-xl font-bold text-zinc-100 px-2 tracking-tight">
+                                    Thing For Doing
+                                </a>
+                            </div>
+                            <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                                <a class="{{working_memory_class}}" href="/">Working Memory</a>
+                                <a class="{{boards_class}}" href="/boards">Boards</a>
+                            </div>
+                        </div>
+                    </div>
+                </div> 
+            </header>
+            <main class="flex-1 py-6">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="space-y-6 py-2">
+                        <h1 className="text-3xl font-bold text-zinc-100 tracking-tight">Working Memory</h1>
+                        <p className="text-zinc-400">Start typing anywhere</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </body>
 </html>

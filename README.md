@@ -23,6 +23,8 @@ mise run dev
 
 The development container mounts the source tree. Changes to `src/` or `build.zig` rebuild and restart only the app process; the database container and application container remain running.
 
+The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/app.css`.
+
 ## Production Image
 
 Build and run the production-style image with:

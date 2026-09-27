@@ -12,4 +12,4 @@ run = "docker compose down"
 
 [tasks.test]
 description = "Run Zig tests in the development container"
-run = "docker compose run --rm app-dev zig build test"
+run = "docker compose run --rm app-dev sh -c 'tailwindcss --input src/public/input.css --output src/public/app.css && zig build test'"

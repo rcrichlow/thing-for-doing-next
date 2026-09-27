@@ -4,6 +4,7 @@ const template = @import("template.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const IndexPage = template.Template(@embedFile("public/index.html"));
+const app_css = @embedFile("public/app.css");
 
 const Config = struct {
     port: u16,
@@ -66,14 +67,43 @@ fn route(request: *std.http.Server.Request) !void {
         });
     }
 
+    if (std.mem.eql(u8, request.head.target, "/assets/app.css")) {
+        return request.respond(app_css, .{
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "text/css; charset=utf-8" },
+                .{ .name = "cache-control", .value = "public, max-age=31536000, immutable" },
+            },
+        });
+    }
+
+    const active_nav = "border-violet-500 text-zinc-100 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium";
+    const inactive_nav = "border-transparent text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-colors";
+
     if (std.mem.eql(u8, request.head.target, "/")) {
         std.log.info("index visited...", .{});
         var response_buffer: [16 * 1024]u8 = undefined;
         var response_writer = std.Io.Writer.fixed(&response_buffer);
         try IndexPage.render(&response_writer, .{
             .title = "Thing for Doing Next",
-            .heading = "Thing for Doing Next",
-            .message = "The Zig web server is running. Isn't that cool?",
+            .heading = "Working Memory",
+            .message = "hi",
+            .boards_class = inactive_nav,
+            .working_memory_class = active_nav,
+        });
+        return request.respond(response_writer.buffered(), .{
+            .extra_headers = &.{.{ .name = "content-type", .value = "text/html; charset=utf-8" }},
+        });
+    }
+
+    if (std.mem.eql(u8, request.head.target, "/boards")) {
+        var response_buffer: [16 * 1024]u8 = undefined;
+        var response_writer = std.Io.Writer.fixed(&response_buffer);
+        try IndexPage.render(&response_writer, .{
+            .title = "Thing for Doing Next",
+            .heading = "Board",
+            .message = "This will house the kanban board...",
+            .boards_class = active_nav,
+            .working_memory_class = inactive_nav,
         });
         return request.respond(response_writer.buffered(), .{
             .extra_headers = &.{.{ .name = "content-type", .value = "text/html; charset=utf-8" }},

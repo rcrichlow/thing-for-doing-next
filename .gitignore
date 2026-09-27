@@ -1,5 +1,6 @@
 .zig-cache/
 zig-out/
+src/public/app.css
 
 # Local environment and Compose overrides.
 .env
