@@ -7,7 +7,7 @@ An experimental personal application built to evaluate Zig, server-rendered HTML
 - Zig HTTP server, currently dependency-free
 - PostgreSQL 17
 - Docker Compose for local development and deployment-like validation
-- HTMX will be vendored or pinned locally when the first interactive vertical slice is built
+- HTMX 4.0.0-beta6, vendored locally and served as an embedded static asset
 
 Docker is intentional here. It keeps the database, compiler/runtime assumptions, and production-style image build reproducible while the stack is being evaluated. The application image is a multi-stage build and does not include the Zig compiler at runtime.
 
@@ -23,7 +23,9 @@ mise run dev
 
 The development container mounts the source tree. Changes to `src/` or `build.zig` rebuild and restart only the app process; the database container and application container remain running.
 
-The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/app.css`.
+The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/app.css` with `Cache-Control: no-cache` so browsers revalidate it on each use.
+
+HTMX is vendored in `src/public/htmx-4.0.0-beta6.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta6/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`. It is embedded directly as JavaScript and served at `/assets/htmx-4.0.0-beta6.min.js` with immutable caching. When upgrading HTMX, update the versioned filename, embedded asset route, and script URL together.
 
 ## Production Image
 

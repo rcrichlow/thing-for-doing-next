@@ -5,6 +5,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const IndexPage = template.Template(@embedFile("public/index.html"));
 const app_css = @embedFile("public/app.css");
+const htmx_js = @embedFile("public/htmx-4.0.0-beta6.min.js");
 
 const Config = struct {
     port: u16,
@@ -71,6 +72,15 @@ fn route(request: *std.http.Server.Request) !void {
         return request.respond(app_css, .{
             .extra_headers = &.{
                 .{ .name = "content-type", .value = "text/css; charset=utf-8" },
+                .{ .name = "cache-control", .value = "no-cache" },
+            },
+        });
+    }
+
+    if (std.mem.eql(u8, request.head.target, "/assets/htmx-4.0.0-beta6.min.js")) {
+        return request.respond(htmx_js, .{
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "text/javascript; charset=utf-8" },
                 .{ .name = "cache-control", .value = "public, max-age=31536000, immutable" },
             },
         });
@@ -86,7 +96,7 @@ fn route(request: *std.http.Server.Request) !void {
         try IndexPage.render(&response_writer, .{
             .title = "Thing for Doing Next",
             .heading = "Working Memory",
-            .message = "hi",
+            .message = "Capture thoughts here before organizing them into board work.",
             .boards_class = inactive_nav,
             .working_memory_class = active_nav,
         });
@@ -100,7 +110,7 @@ fn route(request: *std.http.Server.Request) !void {
         var response_writer = std.Io.Writer.fixed(&response_buffer);
         try IndexPage.render(&response_writer, .{
             .title = "Thing for Doing Next",
-            .heading = "Board",
+            .heading = "Boards",
             .message = "This will house the kanban board...",
             .boards_class = active_nav,
             .working_memory_class = inactive_nav,
