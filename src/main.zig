@@ -6,6 +6,7 @@ const layout = @import("layout.zig");
 const migrate = @import("migrate.zig");
 const migrations = @import("migrations");
 const template = @import("template.zig");
+const boards = @import("handlers/boards.zig");
 const working_memory = @import("handlers/working_memory.zig");
 
 const Io = std.Io;
@@ -18,7 +19,6 @@ const pathParam = http.pathParam;
 const app_css = @embedFile("public/app.css");
 const app_js = @embedFile("public/app.js");
 const htmx_js = @embedFile("public/htmx-4.0.0-beta6.min.js");
-const BoardsPage = template.Template(@embedFile("public/pages/boards.html"));
 
 /// Upper bound on concurrently running tasks. `Io.Threaded` applies this limit
 /// process-wide to every `concurrent` task, so it caps open connections and any
@@ -250,8 +250,51 @@ fn route(ctx: *Context) !void {
     };
 
     if (std.mem.eql(u8, path, "/boards")) return switch (ctx.method) {
-        .GET, .HEAD => ctx.page(.boards, BoardsPage.render, .{.{}}),
+        .GET, .HEAD => boards.index(ctx),
+        .POST => boards.create(ctx),
+        else => ctx.methodNotAllowed("GET, HEAD, POST"),
+    };
+
+    if (std.mem.eql(u8, path, "/boards/new")) return switch (ctx.method) {
+        .GET, .HEAD => boards.newForm(ctx),
         else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (std.mem.eql(u8, path, "/boards/tile")) return switch (ctx.method) {
+        .GET, .HEAD => boards.createTile(ctx),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (std.mem.eql(u8, path, "/boards/archived")) return switch (ctx.method) {
+        .GET, .HEAD => boards.archived(ctx),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/boards/{id}", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => boards.show(ctx, id),
+        .DELETE => boards.destroy(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, DELETE"),
+    };
+
+    if (pathParam("/boards/{id}/title", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => boards.showTitle(ctx, id),
+        .PUT => boards.rename(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, PUT"),
+    };
+
+    if (pathParam("/boards/{id}/title/edit", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => boards.editTitle(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/boards/{id}/archive", path)) |id| return switch (ctx.method) {
+        .POST => boards.archive(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
+    };
+
+    if (pathParam("/boards/{id}/unarchive", path)) |id| return switch (ctx.method) {
+        .POST => boards.unarchive(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
     };
 
     return ctx.notFound();
@@ -278,7 +321,10 @@ test {
     _ = migrate;
     _ = template;
     _ = working_memory;
+    _ = boards;
     _ = @import("working_memory.zig");
+    _ = @import("boards.zig");
+    _ = @import("text.zig");
 }
 
 const testing = std.testing;
@@ -322,10 +368,18 @@ test "HEAD omits the body but keeps the length" {
 
 test "query strings do not affect routing" {
     var buffer: [16 * 1024]u8 = undefined;
-    const response = try testRequest("GET /boards?from=test HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    const response = try testRequest("GET /up?from=test HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
     try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
-    try expectHeader(response, "content-type: text/html; charset=utf-8\r\n");
-    try testing.expect(std.mem.indexOf(u8, response, "Boards</h1>") != null);
+    try expectHeader(response, "content-type: application/json\r\n");
+}
+
+test "board routes enforce methods" {
+    var buffer: [1024]u8 = undefined;
+    var response = try testRequest("GET /boards/1/archive HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 405 Method Not Allowed\r\n"));
+    try expectHeader(response, "allow: POST\r\n");
+    response = try testRequest("PUT /boards/1 HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD, DELETE\r\n");
 }
 
 test "entry routes enforce methods and match ids" {
@@ -355,13 +409,6 @@ test "serves first-party JavaScript with revalidation" {
     try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
     try expectHeader(response, "content-type: text/javascript; charset=utf-8\r\n");
     try expectHeader(response, "cache-control: no-cache\r\n");
-}
-
-test "pages highlight their navigation section" {
-    var buffer: [16 * 1024]u8 = undefined;
-    const response = try testRequest("GET /boards HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
-    try testing.expect(std.mem.indexOf(u8, response, "href=\"/boards\"\n    aria-current=\"page\"") != null);
-    try testing.expect(std.mem.indexOf(u8, response, "Boards</h1>") != null);
 }
 
 test "unknown path responds 404" {

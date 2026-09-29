@@ -100,6 +100,18 @@ fn validate(migrations: []const Migration) error{InvalidMigrationList}!void {
     }
 }
 
+/// Opens a test pool (see `db.testing.pool`) with the embedded application
+/// migrations applied. Skips the test when no test database is configured.
+pub fn testPool(size: usize) !*db.Pool {
+    const pool = try db.testing.pool(size);
+    errdefer pool.deinit();
+    const conn = try pool.acquire();
+    defer conn.release();
+    var diagnostics: Diagnostics = .{};
+    _ = try run(conn, &@import("migrations").all, &diagnostics);
+    return pool;
+}
+
 test "rejects unsorted or duplicate migration lists" {
     try std.testing.expectError(error.InvalidMigrationList, validate(&.{
         .{ .version = "002_b", .sql = "" },

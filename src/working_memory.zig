@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const db = @import("db.zig");
+const text = @import("text.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -70,22 +71,8 @@ pub fn deleteAll(conn: *db.Conn) Error!void {
     _ = try conn.exec("DELETE FROM working_memory_entries", .{});
 }
 
-/// Normalizes submitted content: converts CRLF and CR line endings to LF and
-/// trims surrounding whitespace. Returns null when nothing remains.
-pub fn normalize(arena: Allocator, raw: []const u8) Allocator.Error!?[]const u8 {
-    var out: std.ArrayList(u8) = try .initCapacity(arena, raw.len);
-    var i: usize = 0;
-    while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\r') {
-            out.appendAssumeCapacity('\n');
-            if (i + 1 < raw.len and raw[i + 1] == '\n') i += 1;
-        } else {
-            out.appendAssumeCapacity(raw[i]);
-        }
-    }
-    const trimmed = std.mem.trim(u8, out.items, " \t\n\x0b\x0c");
-    return if (trimmed.len == 0) null else trimmed;
-}
+/// Normalizes submitted content; see `text.multiline`.
+pub const normalize = text.multiline;
 
 fn fromRow(arena: Allocator, row: db.Row) Error!Entry {
     return .{
@@ -96,10 +83,8 @@ fn fromRow(arena: Allocator, row: db.Row) Error!Entry {
 }
 
 fn blankOr(conn: *db.Conn, err: db.Error) (Error || error{BlankContent}) {
-    if (err == error.PG) if (conn.err) |pg_err| {
-        // check_violation: the content CHECK rejected whitespace-only text.
-        if (std.mem.eql(u8, pg_err.code, "23514")) return error.BlankContent;
-    };
+    // The content CHECK rejects whitespace-only text the normalizer missed.
+    if (err == error.PG) if (conn.err) |pg_err| if (pg_err.isCheckViolation()) return error.BlankContent;
     return err;
 }
 
@@ -107,24 +92,7 @@ const testing = std.testing;
 
 /// Opens a test pool with the application schema migrated.
 pub fn testPool() !*db.Pool {
-    const migrate = @import("migrate.zig");
-    const pool = try db.testing.pool(1);
-    errdefer pool.deinit();
-    const conn = try pool.acquire();
-    defer conn.release();
-    var diagnostics: migrate.Diagnostics = .{};
-    _ = try migrate.run(conn, &@import("migrations").all, &diagnostics);
-    return pool;
-}
-
-test "normalize converts line endings and trims" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    try testing.expectEqualStrings("one\ntwo\nthree", (try normalize(a, "  one\r\ntwo\rthree \r\n")).?);
-    try testing.expectEqualStrings("keep  inner\n\nspace", (try normalize(a, "keep  inner\n\nspace")).?);
-    try testing.expectEqual(null, try normalize(a, " \r\n\t "));
-    try testing.expectEqual(null, try normalize(a, ""));
+    return @import("migrate.zig").testPool(1);
 }
 
 test "creates, lists newest first, finds, updates, and deletes" {

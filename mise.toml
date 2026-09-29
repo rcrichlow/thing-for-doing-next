@@ -10,6 +10,10 @@ run = "docker compose --profile production up --build app"
 description = "Stop application services"
 run = "docker compose down"
 
+[tasks.e2e]
+description = "Run browser tests against an isolated server and database (args go to playwright test)"
+run = "scripts/e2e"
+
 [tasks.test]
 description = "Run Zig tests, including database integration tests, in the development container"
 run = [

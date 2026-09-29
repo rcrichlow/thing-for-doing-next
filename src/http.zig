@@ -24,6 +24,17 @@ pub const ResponseOptions = struct {
     content_type: []const u8,
     cache_control: ?[]const u8 = null,
     allow: ?[]const u8 = null,
+    /// Additional headers, e.g. `HX-Redirect`.
+    headers: []const http.Header = &.{},
+};
+
+pub const PageOptions = struct {
+    /// Navigation section to highlight.
+    active: ?layout.Section,
+    /// Document title; defaults to the app name.
+    title: []const u8 = app_title,
+    status: http.Status = .ok,
+    width: layout.Width = .contained,
 };
 
 pub const Context = struct {
@@ -100,8 +111,8 @@ pub const Context = struct {
         };
     }
 
-    pub fn respond(ctx: *Context, body: []const u8, options: ResponseOptions) Request.ExpectContinueError!void {
-        var headers: [3]http.Header = undefined;
+    pub fn respond(ctx: *Context, body: []const u8, options: ResponseOptions) ResponseError!void {
+        const headers = try ctx.arena.alloc(http.Header, 3 + options.headers.len);
         var count: usize = 0;
         headers[count] = .{ .name = "content-type", .value = options.content_type };
         count += 1;
@@ -113,10 +124,12 @@ pub const Context = struct {
             headers[count] = .{ .name = "allow", .value = value };
             count += 1;
         }
+        @memcpy(headers[count..][0..options.headers.len], options.headers);
+        count += options.headers.len;
         return ctx.request.respond(body, .{ .status = options.status, .extra_headers = headers[0..count] });
     }
 
-    pub fn methodNotAllowed(ctx: *Context, allow: []const u8) Request.ExpectContinueError!void {
+    pub fn methodNotAllowed(ctx: *Context, allow: []const u8) ResponseError!void {
         return ctx.respond("method not allowed\n", .{
             .status = .method_not_allowed,
             .content_type = text_type,
@@ -124,7 +137,7 @@ pub const Context = struct {
         });
     }
 
-    pub fn notFound(ctx: *Context) Request.ExpectContinueError!void {
+    pub fn notFound(ctx: *Context) ResponseError!void {
         return ctx.respond("not found\n", .{ .status = .not_found, .content_type = text_type });
     }
 
@@ -137,19 +150,39 @@ pub const Context = struct {
         return ctx.respond(out.written(), .{ .status = status, .content_type = html_type });
     }
 
-    /// Renders a full page: the shared layout around `render(writer, args...)`.
-    pub fn page(ctx: *Context, active: ?layout.Section, comptime render: anytype, args: anytype) ResponseError!void {
+    /// Like `html`, with additional response headers such as `HX-Retarget`.
+    pub fn htmlWithHeaders(
+        ctx: *Context,
+        status: http.Status,
+        headers: []const http.Header,
+        comptime render: anytype,
+        args: anytype,
+    ) ResponseError!void {
         var out: Io.Writer.Allocating = .init(ctx.arena);
-        const writer = &out.writer;
-        renderPage(writer, active, render, args) catch return error.OutOfMemory;
-        return ctx.respond(out.written(), .{ .content_type = html_type });
+        @call(.auto, render, .{&out.writer} ++ args) catch return error.OutOfMemory;
+        return ctx.respond(out.written(), .{ .status = status, .content_type = html_type, .headers = headers });
+    }
+
+    /// Responds with an empty body that tells HTMX to navigate to `location`.
+    pub fn redirect(ctx: *Context, location: []const u8) ResponseError!void {
+        return ctx.respond("", .{
+            .content_type = html_type,
+            .headers = &.{.{ .name = "HX-Redirect", .value = location }},
+        });
+    }
+
+    /// Renders a full page: the shared layout around `render(writer, args...)`.
+    pub fn page(ctx: *Context, options: PageOptions, comptime render: anytype, args: anytype) ResponseError!void {
+        var out: Io.Writer.Allocating = .init(ctx.arena);
+        renderPage(&out.writer, options, render, args) catch return error.OutOfMemory;
+        return ctx.respond(out.written(), .{ .status = options.status, .content_type = html_type });
     }
 };
 
-fn renderPage(writer: *Io.Writer, active: ?layout.Section, comptime render: anytype, args: anytype) Io.Writer.Error!void {
-    try layout.writeStart(writer, .{ .title = app_title, .active = active });
+fn renderPage(writer: *Io.Writer, options: PageOptions, comptime render: anytype, args: anytype) Io.Writer.Error!void {
+    try layout.writeStart(writer, .{ .title = options.title, .active = options.active, .width = options.width });
     try @call(.auto, render, .{writer} ++ args);
-    try layout.writeEnd(writer);
+    try layout.writeEnd(writer, options.width);
 }
 
 /// Returns the segment captured by the single `{name}` placeholder in
@@ -170,6 +203,14 @@ pub fn pathParam(comptime pattern: []const u8, path: []const u8) ?[]const u8 {
     const segment = path[prefix.len .. path.len - suffix.len];
     if (std.mem.indexOfScalar(u8, segment, '/') != null) return null;
     return segment;
+}
+
+/// Parses a path segment as a record id. Accepts only canonical positive
+/// decimal ids; callers treat anything else as not found.
+pub fn parseId(text: []const u8) ?i64 {
+    if (text.len == 0 or text.len > 18 or text[0] == '0') return null;
+    for (text) |char| if (!std.ascii.isDigit(char)) return null;
+    return std.fmt.parseInt(i64, text, 10) catch null;
 }
 
 /// Test helper: parses a raw HTTP request into a `Context` whose response is
@@ -281,6 +322,17 @@ test "database access without a pool is a server error" {
     try t.init("GET / HTTP/1.1\r\nHost: test\r\n\r\n", null);
     defer t.deinit();
     try testing.expectError(error.DatabaseUnavailable, t.ctx.dbConn());
+}
+
+test "parseId accepts only canonical positive ids" {
+    try testing.expectEqual(@as(?i64, 42), parseId("42"));
+    try testing.expectEqual(null, parseId(""));
+    try testing.expectEqual(null, parseId("0"));
+    try testing.expectEqual(null, parseId("042"));
+    try testing.expectEqual(null, parseId("+4"));
+    try testing.expectEqual(null, parseId("-4"));
+    try testing.expectEqual(null, parseId("4a"));
+    try testing.expectEqual(null, parseId("9999999999999999999"));
 }
 
 test "path params capture one segment" {

@@ -1,8 +1,23 @@
 /**
- * @file Application behaviour that HTMX attributes can't express: keyboard
- * handling, the working-memory composer dialog, and request failure alerts.
- * HTMX still performs every request and swap. There is no build step; keep
- * this file dependency-free and document every function with JSDoc.
+ * @file Application behaviour that HTMX attributes can't express. HTMX still
+ * performs every request and swap; this script only handles keyboard and
+ * focus behaviour, dialogs, and failure alerts. There is no build step: keep
+ * it dependency-free and document every function with JSDoc.
+ *
+ * Behaviour is attached through data attributes:
+ * - `data-autogrow` (textarea): grows with its content.
+ * - `data-focus` (input, textarea): focused, cursor at the end, when inserted.
+ * - `data-submit-on-enter` (textarea): Enter submits, Shift+Enter adds a line.
+ * - `data-require-field="name"` (form): submit buttons are disabled while that
+ *   field is blank; blank and repeated submissions are ignored.
+ * - `data-cancel-on-escape` (form): Escape clicks its `[data-cancel]` button.
+ * - `data-inline-edit` (form): click-to-edit field. Enter or leaving the
+ *   `[data-inline-field]` saves; Escape, or saving blank or unchanged text,
+ *   clicks its hidden `[data-inline-cancel]` button to restore the view.
+ * - `data-local-date` (time): shows its `datetime` as a local date.
+ * - `data-updated-at` (any element): localized "last changed" tooltip.
+ * - `data-composer` (dialog): the working-memory composer; typing anywhere
+ *   opens it.
  */
 (() => {
   "use strict";
@@ -14,10 +29,21 @@
    * @property {unknown} [error] Set on `htmx:error`.
    */
 
+  /** A text field this script manages. @typedef {HTMLInputElement | HTMLTextAreaElement} TextField */
+
   /** How long a failure alert stays visible, in milliseconds. */
   const ALERT_DURATION_MS = 8000;
 
-  // --- Textareas ------------------------------------------------------------
+  // --- Fields ---------------------------------------------------------------
+
+  /**
+   * Whether an element is a text field this script manages.
+   * @param {unknown} element
+   * @returns {element is TextField}
+   */
+  function isTextField(element) {
+    return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+  }
 
   /**
    * Resizes a textarea to fit its content, up to its CSS max-height.
@@ -31,35 +57,58 @@
   }
 
   /**
-   * Focuses a textarea with the cursor after its last character.
-   * @param {HTMLTextAreaElement} textarea
+   * Focuses a field with the cursor after its last character.
+   * @param {TextField} field
    * @returns {void}
    */
-  function focusAtEnd(textarea) {
-    textarea.focus();
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
+  function focusAtEnd(field) {
+    field.focus();
+    const end = field.value.length;
+    field.setSelectionRange(end, end);
   }
 
   /**
-   * Applies `data-autogrow` and `data-focus` to `root` and its descendants.
-   * Swapped-in content is prepared here rather than in HTMX swap events,
-   * because the element that issued a request may already be detached.
+   * Shows a `<time data-local-date>` element's `datetime` as a local date.
+   * @param {HTMLTimeElement} time
+   * @returns {void}
+   */
+  function localizeDate(time) {
+    const date = new Date(time.dateTime);
+    if (!Number.isNaN(date.getTime())) time.textContent = date.toLocaleDateString();
+  }
+
+  /**
+   * Returns `root` (if it matches) and its descendants matching `selector`.
+   * @param {Element} root
+   * @param {string} selector
+   * @returns {Element[]}
+   */
+  function selfAndDescendants(root, selector) {
+    const found = root.matches(selector) ? [root] : [];
+    found.push(...root.querySelectorAll(selector));
+    return found;
+  }
+
+  /**
+   * Applies data-attribute behaviour to `root` and its descendants. Runs for
+   * the initial page and for every inserted element, rather than in HTMX swap
+   * events, because the element that issued a request may be detached.
    * @param {Element} root
    * @returns {void}
    */
   function prepare(root) {
-    const selector = "textarea[data-autogrow], textarea[data-focus]";
-    /** @type {HTMLTextAreaElement[]} */
-    const elements = root instanceof HTMLTextAreaElement && root.matches(selector) ? [root] : [];
-    elements.push(...root.querySelectorAll("textarea"));
-    for (const element of elements) {
-      if (!element.matches(selector)) continue;
-      if (element.hasAttribute("data-autogrow")) autogrow(element);
-      if (element.hasAttribute("data-focus")) {
-        element.removeAttribute("data-focus");
-        focusAtEnd(element);
-      }
+    for (const element of selfAndDescendants(root, "textarea[data-autogrow]")) {
+      autogrow(/** @type {HTMLTextAreaElement} */ (element));
+    }
+    for (const element of selfAndDescendants(root, "time[data-local-date]")) {
+      localizeDate(/** @type {HTMLTimeElement} */ (element));
+    }
+    for (const element of selfAndDescendants(root, "form[data-require-field]")) {
+      updateRequired(/** @type {HTMLFormElement} */ (element));
+    }
+    for (const element of selfAndDescendants(root, "[data-focus]")) {
+      element.removeAttribute("data-focus");
+      if (isTextField(element)) focusAtEnd(element);
     }
   }
 
@@ -77,16 +126,79 @@
   }
 
   /**
-   * Grows textareas as they are typed in and keeps the composer's submit
-   * button in sync with its content.
+   * Grows textareas as they are typed in and keeps required-field forms'
+   * submit buttons in sync.
    * @param {Event} event
    * @returns {void}
    */
   function onInput(event) {
     const target = event.target;
-    if (!(target instanceof Element)) return;
     if (target instanceof HTMLTextAreaElement && target.matches("[data-autogrow]")) autogrow(target);
-    if (target.closest("#working-memory-form")) updateComposerSubmit();
+    if (isTextField(target) && target.form?.matches("[data-require-field]")) updateRequired(target.form);
+  }
+
+  // --- Required fields ------------------------------------------------------
+
+  /**
+   * The field named by a form's `data-require-field`, if present.
+   * @param {HTMLFormElement} form
+   * @returns {TextField | null}
+   */
+  function requiredField(form) {
+    const field = form.elements.namedItem(form.dataset.requireField ?? "");
+    return isTextField(field) ? field : null;
+  }
+
+  /**
+   * Whether a required-field form's field is blank.
+   * @param {HTMLFormElement} form
+   * @returns {boolean}
+   */
+  function isBlank(form) {
+    return (requiredField(form)?.value.trim() ?? "") === "";
+  }
+
+  /**
+   * Disables the form's submit buttons, including ones outside the form
+   * associated through their `form` attribute, while its field is blank.
+   * @param {HTMLFormElement} form
+   * @returns {void}
+   */
+  function updateRequired(form) {
+    const blank = isBlank(form);
+    for (const element of form.elements) {
+      if (element instanceof HTMLButtonElement && element.type === "submit") element.disabled = blank;
+    }
+  }
+
+  /**
+   * Stops blank or already-pending submissions of required-field forms before
+   * they reach HTMX. Registered as a capture listener so it runs before
+   * HTMX's own submit handler on the form.
+   * @param {SubmitEvent} event
+   * @returns {void}
+   */
+  function onRequiredSubmit(event) {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.matches("[data-require-field]")) return;
+    if (form.dataset.pending || isBlank(form)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    form.dataset.pending = "true";
+  }
+
+  /**
+   * Allows a required-field form to submit again once its request finishes.
+   * @param {Event} event An HTMX request event.
+   * @returns {void}
+   */
+  function clearPending(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const form = target.closest("form[data-require-field]");
+    if (form instanceof HTMLFormElement) delete form.dataset.pending;
   }
 
   // --- Composer -------------------------------------------------------------
@@ -100,57 +212,75 @@
   }
 
   /**
-   * The composer's content field, if this page has a composer.
-   * @returns {HTMLTextAreaElement | null}
+   * The composer's form, if this page has a composer.
+   * @returns {HTMLFormElement | null}
    */
-  function composerInput() {
-    return composer()?.querySelector("textarea") ?? null;
+  function composerForm() {
+    return composer()?.querySelector("form") ?? null;
   }
 
   /**
-   * Disables the composer's submit button while its content is blank.
-   * @returns {void}
-   */
-  function updateComposerSubmit() {
-    /** @type {HTMLButtonElement | null | undefined} */
-    const submit = composer()?.querySelector("[data-composer-submit]");
-    const input = composerInput();
-    if (submit && input) submit.disabled = input.value.trim() === "";
-  }
-
-  /**
-   * Whether keystrokes are already going to an editable element.
+   * Whether keystrokes are already going to a visible editable element.
+   * Focus can linger for a moment on a field inside a dialog that just
+   * closed; keystrokes sent there would be lost, so that doesn't count.
    * @param {Element | null} element
    * @returns {boolean}
    */
   function isTypingTarget(element) {
-    return (
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement ||
+    const editable =
+      isTextField(element) ||
       element instanceof HTMLSelectElement ||
-      (element instanceof HTMLElement && element.isContentEditable)
-    );
+      (element instanceof HTMLElement && element.isContentEditable);
+    return editable && element.checkVisibility();
+  }
+
+  /**
+   * Discards the composer's draft and any validation message.
+   * @returns {void}
+   */
+  function resetComposer() {
+    const form = composerForm();
+    if (!form) return;
+    form.reset();
+    delete form.dataset.pending;
+    form.querySelector("#composer-error")?.replaceChildren();
+    prepare(form);
   }
 
   /**
    * Opens the composer when a printable character is typed anywhere on the
-   * page. Focus moves during keydown, so the browser inserts the character
-   * into the composer.
+   * page, starting the draft with that character. The character is inserted
+   * explicitly: browsers don't reliably deliver a keystroke to an element
+   * that received focus during its keydown.
    * @param {KeyboardEvent} event
    * @returns {void}
    */
   function onTypeAnywhere(event) {
     const dialog = composer();
-    const input = composerInput();
-    if (!dialog || !input || document.querySelector("dialog[open]")) return;
+    const field = composerForm()?.querySelector("textarea");
+    if (!dialog || !field || document.querySelector("dialog[open]")) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
     if (event.key.length !== 1 || /\s/.test(event.key)) return;
     if (isTypingTarget(document.activeElement)) return;
-    // Also reset here: the `close` event that normally clears the draft is
-    // dispatched asynchronously and may not have run yet.
+    event.preventDefault();
     resetComposer();
     dialog.showModal();
-    input.focus();
+    field.value = event.key;
+    focusAtEnd(field);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  /**
+   * Closes the composer and discards its draft. Every way of closing it goes
+   * through here rather than the dialog's `close` event, which is dispatched
+   * asynchronously and could wipe a draft started by the next keystroke.
+   * @returns {void}
+   */
+  function closeComposer() {
+    const dialog = composer();
+    if (!dialog?.open) return;
+    dialog.close();
+    resetComposer();
   }
 
   /**
@@ -163,116 +293,83 @@
     const dialog = composer();
     const target = event.target;
     if (!dialog || !(target instanceof Element)) return;
-    if (target === dialog || target.closest("[data-composer-close]")) dialog.close();
+    if (target === dialog || target.closest("[data-composer-close]")) closeComposer();
   }
 
   /**
-   * Discards the composer's draft and any validation message.
-   * @returns {void}
-   */
-  function resetComposer() {
-    const form = composer()?.querySelector("form");
-    const input = composerInput();
-    form?.reset();
-    form?.querySelector("#composer-error")?.replaceChildren();
-    if (input) autogrow(input);
-    updateComposerSubmit();
-  }
-
-  /**
-   * Discards the draft whenever the composer closes (Escape, backdrop,
-   * Cancel, or after saving).
+   * Handles Escape, which the browser reports as `cancel` before closing.
    * @param {Event} event
    * @returns {void}
    */
-  function onComposerClose(event) {
-    if (event.target === composer()) resetComposer();
-  }
-
-  /**
-   * Stops blank or already-pending composer submissions before they reach
-   * HTMX. Registered as a capture listener so it runs before HTMX's own
-   * submit handler on the form.
-   * @param {SubmitEvent} event
-   * @returns {void}
-   */
-  function onComposerSubmit(event) {
-    const form = event.target;
-    if (!(form instanceof HTMLFormElement) || form.id !== "working-memory-form") return;
-    const content = /** @type {HTMLTextAreaElement} */ (form.elements.namedItem("content"));
-    if (form.dataset.pending || content.value.trim() === "") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return;
-    }
-    form.dataset.pending = "true";
-  }
-
-  /**
-   * Allows the composer to submit again after its request finishes.
-   * @param {Event} event An HTMX request event.
-   * @returns {void}
-   */
-  function clearPending(event) {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const form = target.closest("#working-memory-form");
-    if (form instanceof HTMLFormElement) delete form.dataset.pending;
+  function onComposerCancel(event) {
+    if (event.target !== composer()) return;
+    event.preventDefault();
+    closeComposer();
   }
 
   // --- Inline editing -------------------------------------------------------
 
   /**
-   * Leaves edit mode without saving by triggering the form's hidden
-   * `data-entry-cancel` button, which fetches the read-only entry.
-   * @param {HTMLFormElement} form A `data-entry-edit` form.
+   * Leaves edit mode without saving by clicking the form's hidden
+   * `[data-inline-cancel]` button, which fetches the read-only view.
+   * @param {HTMLFormElement} form A `data-inline-edit` form.
    * @returns {void}
    */
   function cancelEdit(form) {
     form.dataset.done = "true";
     /** @type {HTMLButtonElement | null} */
-    const cancel = form.querySelector("[data-entry-cancel]");
+    const cancel = form.querySelector("[data-inline-cancel]");
     cancel?.click();
   }
 
   /**
    * Saves an edit, unless the text is blank or unchanged, which just leaves
    * edit mode. Runs at most once per form.
-   * @param {HTMLFormElement} form A `data-entry-edit` form.
+   * @param {HTMLFormElement} form A `data-inline-edit` form.
    * @returns {void}
    */
   function saveEdit(form) {
     if (form.dataset.done) return;
-    const textarea = form.querySelector("textarea");
-    if (!textarea) return;
-    const value = textarea.value.trim();
-    if (value === "" || value === textarea.defaultValue.trim()) return cancelEdit(form);
+    const field = form.querySelector("[data-inline-field]");
+    if (!isTextField(field)) return;
+    const value = field.value.trim();
+    if (value === "" || value === field.defaultValue.trim()) return cancelEdit(form);
     form.dataset.done = "true";
     form.requestSubmit();
   }
 
   /**
-   * Keyboard handling inside textareas: Enter saves, Shift+Enter inserts a
-   * newline, and Escape cancels an inline edit.
+   * Keyboard handling in text fields: Enter saves inline edits and submits
+   * `data-submit-on-enter` textareas (Shift+Enter inserts a newline), and
+   * Escape cancels inline edits and `data-cancel-on-escape` forms.
    * @param {KeyboardEvent} event
    * @returns {void}
    */
-  function onTextareaKeydown(event) {
-    const textarea = event.target;
-    if (!(textarea instanceof HTMLTextAreaElement) || event.isComposing) return;
-    const editForm = textarea.closest("form[data-entry-edit]");
+  function onFieldKeydown(event) {
+    const field = event.target;
+    if (!isTextField(field) || event.isComposing) return;
+    const form = field.form;
+    const inline = form?.matches("[data-inline-edit]") ? form : null;
 
-    if (event.key === "Escape" && editForm instanceof HTMLFormElement) {
-      event.preventDefault();
-      cancelEdit(editForm);
+    if (event.key === "Escape") {
+      if (inline) {
+        event.preventDefault();
+        cancelEdit(inline);
+      } else if (form?.matches("[data-cancel-on-escape]")) {
+        event.preventDefault();
+        /** @type {HTMLButtonElement | null} */
+        const cancel = form.querySelector("[data-cancel]");
+        cancel?.click();
+      }
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || !textarea.matches("[data-submit-on-enter]")) return;
-    event.preventDefault();
-    if (editForm instanceof HTMLFormElement) {
-      saveEdit(editForm);
-    } else if (textarea.value.trim() !== "") {
-      textarea.form?.requestSubmit();
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (inline) {
+      event.preventDefault();
+      saveEdit(inline);
+    } else if (field instanceof HTMLTextAreaElement && field.matches("[data-submit-on-enter]")) {
+      event.preventDefault();
+      form?.requestSubmit();
     }
   }
 
@@ -281,11 +378,11 @@
    * @param {FocusEvent} event
    * @returns {void}
    */
-  function onEditFocusOut(event) {
-    const textarea = event.target;
-    if (!(textarea instanceof HTMLTextAreaElement)) return;
-    const form = textarea.closest("form[data-entry-edit]");
-    if (form instanceof HTMLFormElement) saveEdit(form);
+  function onInlineFocusOut(event) {
+    const field = event.target;
+    if (!isTextField(field) || !field.matches("[data-inline-field]")) return;
+    const form = field.form;
+    if (form?.matches("[data-inline-edit]")) saveEdit(form);
   }
 
   // --- Request outcomes -----------------------------------------------------
@@ -335,19 +432,28 @@
   }
 
   /**
+   * The form an HTMX event came from, if any.
+   * @param {Event} event
+   * @returns {HTMLFormElement | null}
+   */
+  function eventForm(event) {
+    const target = event.target;
+    return target instanceof Element ? target.closest("form") : null;
+  }
+
+  /**
    * Closes the composer after a successful save and re-enables an inline
-   * edit form whose save failed, so it can be retried.
+   * edit whose save failed, so it can be retried.
    * @param {Event} event `htmx:after:request`
    * @returns {void}
    */
   function onAfterRequest(event) {
     clearPending(event);
     const status = responseStatus(event);
-    const target = event.target;
-    const form = target instanceof Element ? target.closest("form") : null;
+    const form = eventForm(event);
     if (!form || status === undefined) return;
-    if (status === 201 && form.id === "working-memory-form") composer()?.close();
-    if (status >= 500 && form.matches("[data-entry-edit]")) delete form.dataset.done;
+    if (status === 201 && form === composerForm()) closeComposer();
+    if (status >= 500 && form.matches("[data-inline-edit]")) delete form.dataset.done;
   }
 
   /**
@@ -368,8 +474,8 @@
    */
   function onRequestError(event) {
     clearPending(event);
-    const target = event.target;
-    if (target instanceof Element) target.closest("[data-entry-edit]")?.removeAttribute("data-done");
+    const form = eventForm(event);
+    if (form?.matches("[data-inline-edit]")) delete form.dataset.done;
     showAlert();
   }
 
@@ -387,17 +493,18 @@
     if (!Number.isNaN(date.getTime())) element.title = date.toLocaleString();
   }
 
+  prepare(document.body);
   new MutationObserver(onMutations).observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener("input", onInput);
   window.addEventListener("keydown", onTypeAnywhere);
-  document.addEventListener("keydown", onTextareaKeydown);
+  document.addEventListener("keydown", onFieldKeydown);
   document.addEventListener("click", onComposerClick);
   document.addEventListener("click", onAlertDismiss);
-  // `close` and `submit` are captured: `close` doesn't bubble, and the submit
-  // guard must run before HTMX's listener on the form.
-  document.addEventListener("close", onComposerClose, true);
-  document.addEventListener("submit", onComposerSubmit, true);
-  document.addEventListener("focusout", onEditFocusOut);
+  // `cancel` and `submit` are captured: `cancel` doesn't bubble, and the
+  // submit guard must run before HTMX's listener on the form.
+  document.addEventListener("cancel", onComposerCancel, true);
+  document.addEventListener("submit", onRequiredSubmit, true);
+  document.addEventListener("focusout", onInlineFocusOut);
   document.addEventListener("htmx:after:request", onAfterRequest);
   document.addEventListener("htmx:response:error", onResponseError);
   document.addEventListener("htmx:error", onRequestError);

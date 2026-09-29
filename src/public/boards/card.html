@@ -1,0 +1,24 @@
+<div
+    id="board-{{id}}"
+    data-testid="board-card"
+    class="group relative h-40 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-md transition-all duration-200 hover:border-violet-500 hover:shadow-lg">
+    <div class="absolute inset-y-0 left-0 w-1 bg-violet-500 opacity-0 transition-opacity group-hover:opacity-100"></div>
+    <h2 class="mb-2 truncate pr-8 text-xl font-bold text-zinc-200 group-hover:text-violet-400">
+        <a href="/boards/{{id}}" class="after:absolute after:inset-0">{{title}}</a>
+    </h2>
+    <p class="absolute bottom-4 left-6 text-xs text-zinc-500">Created <time datetime="{{created_at}}" data-local-date>{{created_date}}</time></p>
+    <button
+        type="button"
+        title="Archive Board"
+        aria-label="Archive board {{title}}"
+        data-testid="archive-board-{{id}}"
+        class="absolute right-4 top-4 z-10 rounded-md p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-200 focus:opacity-100 group-hover:opacity-100"
+        hx-post="/boards/{{id}}/archive"
+        hx-target="#board-{{id}}"
+        hx-swap="delete"
+        hx-confirm="Archive board &quot;{{title}}&quot;?">
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+        </svg>
+    </button>
+</div>

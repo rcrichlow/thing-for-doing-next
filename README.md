@@ -83,6 +83,20 @@ The home page lists working-memory entries, newest first.
 
 The keyboard behaviour is in `src/public/app.js`, a small dependency-free script with JSDoc types. HTMX makes every request.
 
+## Boards
+
+`/boards` lists active boards in creation order, with a tile for creating one. Archiving a board (with confirmation) moves it to `/boards/archived`, where it can be restored or permanently deleted. A board's page shows its title, which is edited in place (Enter or clicking away saves, Escape cancels), and actions to archive or delete it; archived boards show a banner instead and stay editable.
+
+Lists, cards, drag-and-drop, and sending working-memory entries to a board are being built next, in that order.
+
+## Browser Tests
+
+```bash
+mise run e2e
+```
+
+Runs the Playwright tests in `e2e/` against a separate server on port 3001 backed by its own `thing_for_doing_next_e2e` database, so the dev server and its data are untouched. Arguments are passed to `playwright test`, e.g. `mise run e2e -- -g "boards"`. The tests use the system Chromium at `/usr/bin/chromium` (override with `CHROMIUM_PATH`) and need Node.js; their npm dependencies are installed into `e2e/node_modules` on first run.
+
 ## Database
 
 The app requires `DATABASE_URL` (a libpq connection string or `postgresql://` URI) and exits at startup if the database is unreachable or a migration fails. Compose sets it for both app services.
@@ -103,7 +117,7 @@ The target workflows are:
 - Boards, lists, and cards, including inline titles, card details, archived boards, and list deletion with optional card transfer.
 - Drag-and-drop card reordering within and between lists.
 
-Working Memory is implemented, apart from sending an entry to a board, which waits for boards. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
+Working Memory and board management are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
 
 ## Inspiration
 

@@ -54,6 +54,10 @@ pub const PgError = struct {
     pub fn isUnique(err: PgError) bool {
         return std.mem.eql(u8, err.code, "23505");
     }
+
+    pub fn isCheckViolation(err: PgError) bool {
+        return std.mem.eql(u8, err.code, "23514");
+    }
 };
 
 /// A fixed-size pool of connections, all opened eagerly by `init`. Broken

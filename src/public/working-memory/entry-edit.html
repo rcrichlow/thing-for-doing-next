@@ -13,7 +13,7 @@
         </div>
         <form
             class="min-w-0 flex-1"
-            data-entry-edit
+            data-inline-edit
             hx-put="/entries/{{id}}"
             hx-target="#entry-{{id}}"
             hx-swap="outerHTML">
@@ -22,6 +22,7 @@
                 rows="1"
                 aria-label="Edit entry"
                 data-focus
+                data-inline-field
                 data-autogrow
                 data-submit-on-enter
                 class="max-h-[60vh] w-full resize-none rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500">
@@ -29,7 +30,7 @@
             <button
                 type="button"
                 hidden
-                data-entry-cancel
+                data-inline-cancel
                 hx-get="/entries/{{id}}"
                 hx-target="#entry-{{id}}"
                 hx-swap="outerHTML"></button>

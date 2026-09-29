@@ -21,7 +21,7 @@ const ComposerError = template.Template(@embedFile("../public/working-memory/com
 /// GET /
 pub fn index(ctx: *Context) !void {
     const entries = try working_memory.list(try ctx.dbConn(), ctx.arena);
-    return ctx.page(.working_memory, writePage, .{entries});
+    return ctx.page(.{ .active = .working_memory }, writePage, .{entries});
 }
 
 /// POST /entries: responds 201 with the new entry as an out-of-band swap into
@@ -90,12 +90,7 @@ fn missing(ctx: *Context) !void {
     return ctx.html(.not_found, EntryMissing.render, .{.{}});
 }
 
-/// Accepts only canonical positive decimal ids; anything else is not found.
-fn parseId(text: []const u8) ?i64 {
-    if (text.len == 0 or text.len > 18 or text[0] == '0') return null;
-    for (text) |char| if (!std.ascii.isDigit(char)) return null;
-    return std.fmt.parseInt(i64, text, 10) catch null;
-}
+const parseId = http.parseId;
 
 fn writePage(writer: *Io.Writer, entries: []const Entry) Io.Writer.Error!void {
     try PageStart.render(writer, .{});
@@ -131,17 +126,6 @@ fn formatId(buffer: *[20]u8, id: i64) []const u8 {
 }
 
 const testing = std.testing;
-
-test "parseId accepts only canonical positive ids" {
-    try testing.expectEqual(@as(?i64, 42), parseId("42"));
-    try testing.expectEqual(null, parseId(""));
-    try testing.expectEqual(null, parseId("0"));
-    try testing.expectEqual(null, parseId("042"));
-    try testing.expectEqual(null, parseId("+4"));
-    try testing.expectEqual(null, parseId("-4"));
-    try testing.expectEqual(null, parseId("4a"));
-    try testing.expectEqual(null, parseId("9999999999999999999"));
-}
 
 test "entries render escaped with preserved newlines" {
     var out: Io.Writer.Allocating = .init(testing.allocator);

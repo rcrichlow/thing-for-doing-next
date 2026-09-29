@@ -1,0 +1,10 @@
+<button
+    type="button"
+    id="board-create"
+    class="flex h-40 flex-col items-center justify-center rounded-xl border-2 border-dashed border-zinc-800 bg-zinc-900/50 text-zinc-500 transition-colors hover:border-violet-500 hover:text-violet-400"
+    hx-get="/boards/new"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <span class="text-3xl" aria-hidden="true">+</span>
+    <span class="mt-1 font-medium">Create New Board</span>
+</button>

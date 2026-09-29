@@ -35,6 +35,31 @@ services:
       db:
         condition: service_healthy
 
+  # Browser-test server: the dev image serving on port 3001 against the
+  # isolated thing_for_doing_next_e2e database. Started by scripts/e2e.
+  app-e2e:
+    profiles: [e2e]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgresql://thing_for_doing:thing_for_doing@db:5432/thing_for_doing_next_e2e
+    ports:
+      - "3001:3000"
+    volumes:
+      - .:/app
+      - zig_cache:/app/.zig-cache
+      - zig_global_cache:/root/.cache/zig
+    # Installs outside zig-out so it never races the dev watcher's build.
+    command: >-
+      sh -c "tailwindcss --input src/public/input.css --output src/public/app.css
+      && zig build --prefix /tmp/e2e
+      && exec /tmp/e2e/bin/thing-for-doing-next"
+    depends_on:
+      db:
+        condition: service_healthy
+
   db:
     image: postgres:17-alpine
     environment:

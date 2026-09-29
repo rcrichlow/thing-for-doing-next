@@ -25,6 +25,7 @@
         <form
             id="working-memory-form"
             class="mt-4"
+            data-require-field="content"
             hx-post="/entries"
             hx-target="#composer-error"
             hx-swap="innerHTML">
@@ -49,7 +50,6 @@
                 type="submit"
                 form="working-memory-form"
                 disabled
-                data-composer-submit
                 class="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50">
                 Save entry
             </button>

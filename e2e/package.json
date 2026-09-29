@@ -1,0 +1,12 @@
+{
+  "name": "thing-for-doing-next-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests. Run with `mise run e2e`; see ../README.md.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
