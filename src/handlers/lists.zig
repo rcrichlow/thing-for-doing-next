@@ -253,7 +253,7 @@ pub fn writeColumn(writer: *Io.Writer, column: Column) Io.Writer.Error!void {
     try TitleStart.render(writer, .{});
     try writeTitle(writer, column.list);
     var count: [32]u8 = undefined;
-    try BodyStart.render(writer, .{ .count = cardCount(&count, column.cards.len) });
+    try BodyStart.render(writer, .{ .id = list_id, .count = cardCount(&count, column.cards.len) });
     if (column.cards.len == 0) try NoCards.render(writer, .{});
     for (column.cards) |card| {
         var card_id: Id = .{};

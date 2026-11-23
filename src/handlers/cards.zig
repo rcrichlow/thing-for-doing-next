@@ -128,6 +128,25 @@ pub fn destroy(ctx: *Context, id_text: []const u8) !void {
     return ctx.html(.ok, writeDeleted, .{try list_handlers.loadColumn(ctx, list_id)});
 }
 
+/// PUT /cards/{id}/position (list_id, position): a drag-and-drop move. The
+/// page has already moved the card, so the response only re-renders the
+/// affected columns, keeping their counts and delete buttons current. A
+/// missing card, or a target list that is missing or on another board,
+/// answers 404, and the page undoes the move.
+pub fn move(ctx: *Context, id_text: []const u8) !void {
+    const id = http.parseId(id_text) orelse return missing(ctx);
+    const body = try ctx.readForm();
+    const list_id = http.parseId(body.get("list_id") orelse "") orelse return error.InvalidForm;
+    const position = std.fmt.parseInt(i64, body.get("position") orelse "", 10) catch return error.InvalidForm;
+    const moved = cards.move(try ctx.dbConn(), id, list_id, position) catch |err| switch (err) {
+        error.InvalidTarget => return listMissing(ctx),
+        else => |e| return e,
+    } orelse return missing(ctx);
+    const from = try list_handlers.loadColumn(ctx, moved.from_list_id);
+    const to = if (moved.to_list_id == moved.from_list_id) null else try list_handlers.loadColumn(ctx, moved.to_list_id);
+    return ctx.html(.ok, writeMoved, .{ from, to });
+}
+
 fn find(ctx: *Context, id_text: []const u8) !?Card {
     const id = http.parseId(id_text) orelse return null;
     return cards.find(try ctx.dbConn(), ctx.arena, id);
@@ -172,6 +191,11 @@ fn writeSavedDescription(writer: *Io.Writer, card: Card, column: ?Column) Io.Wri
 fn writeDeleted(writer: *Io.Writer, column: ?Column) Io.Writer.Error!void {
     if (column) |c| try list_handlers.writeColumnUpdate(writer, c);
     try list_handlers.writeCloseDialog(writer);
+}
+
+fn writeMoved(writer: *Io.Writer, from: ?Column, to: ?Column) Io.Writer.Error!void {
+    if (from) |c| try list_handlers.writeColumnUpdate(writer, c);
+    if (to) |c| try list_handlers.writeColumnUpdate(writer, c);
 }
 
 fn writeTitle(writer: *Io.Writer, card: Card) Io.Writer.Error!void {
@@ -310,5 +334,69 @@ test "add a card, edit its details, and delete it" {
         defer t.deinit();
         try create(&t.ctx, "99");
         try testing.expectEqual(@as(u16, 404), try t.status());
+    }
+}
+
+test "moving a card re-renders the columns it left and joined" {
+    const pool = try boards.testPool();
+    defer pool.deinit();
+    {
+        const conn = try pool.acquire();
+        defer conn.release();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const board = try boards.create(conn, a, "Board");
+        const todo = (try lists.create(conn, a, board.id, "To do")).?;
+        _ = (try lists.create(conn, a, board.id, "Done")).?;
+        _ = try cards.create(conn, a, todo.id, "First");
+        _ = try cards.create(conn, a, todo.id, "Second");
+        const other = try boards.create(conn, a, "Other");
+        _ = (try lists.create(conn, a, other.id, "Elsewhere")).?;
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/cards/2/position", "list_id=1&position=0"), pool);
+        defer t.deinit();
+        try move(&t.ctx, "2");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+        const body = try t.body();
+        try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
+        try testing.expect(!contains(body, "#list-2"));
+        const second = std.mem.indexOf(u8, body, ">Second</span>").?;
+        try testing.expect(second < std.mem.indexOf(u8, body, ">First</span>").?);
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/cards/1/position", "list_id=2&position=5"), pool);
+        defer t.deinit();
+        try move(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+        const body = try t.body();
+        try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
+        try testing.expect(contains(body, "1 card<"));
+        try testing.expect(!contains(body, "<template hx type=\"partial\" hx-target=\"#modal-root\""));
+    }
+    {
+        // A list on another board is not a valid target.
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/cards/1/position", "list_id=3&position=0"), pool);
+        defer t.deinit();
+        try move(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 404), try t.status());
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/cards/99/position", "list_id=1&position=0"), pool);
+        defer t.deinit();
+        try move(&t.ctx, "99");
+        try testing.expectEqual(@as(u16, 404), try t.status());
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/cards/1/position", "list_id=1&position=x"), pool);
+        defer t.deinit();
+        try testing.expectError(error.InvalidForm, move(&t.ctx, "1"));
     }
 }

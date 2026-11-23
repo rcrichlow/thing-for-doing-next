@@ -91,7 +91,9 @@ Board pages follow the original app's board view: lists are columns in creation 
 
 Each list ends with "Add a card", which appends a card to the list. Clicking a card opens its details dialog, where the title and description are edited in place (the description is multiline and may be cleared) and the card can be deleted. Deleting a list with cards opens a dialog that can move them, in order, to the end of another list on the board, or delete them with it; the dialog is the only confirmation. Other list deletions ask for confirmation in the browser, warning when the list's cards will be deleted too.
 
-Drag-and-drop and sending working-memory entries to a board are being built next, in that order.
+Cards are dragged within and between lists, as in the original app: a press becomes a drag after the pointer moves 8 pixels (or, on touch screens, after it is held still briefly), so clicking still opens the card. A lifted copy follows the pointer while the card's slot moves through the lists, the board and lists scroll near their edges, and Escape cancels. With a card focused, Alt+Up/Down moves it within its list and Alt+Left/Right moves it to the neighbouring list. Moves show immediately and are saved in order through `PUT /cards/{id}/position`; the affected columns are then re-rendered, and a move the server rejects is undone.
+
+Sending working-memory entries to a board is being built next.
 
 ## Browser Tests
 
@@ -121,7 +123,7 @@ The target workflows are:
 - Boards, lists, and cards, including inline titles, card details, archived boards, and list deletion with optional card transfer.
 - Drag-and-drop card reordering within and between lists.
 
-Working Memory, board management, lists, and cards are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
+Working Memory, board management, lists, cards, and drag-and-drop are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop is a dependency-free section of `src/public/app.js` that moves cards in the page and sends each move through HTMX.
 
 ## Inspiration
 

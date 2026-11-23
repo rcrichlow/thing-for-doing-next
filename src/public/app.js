@@ -1,8 +1,8 @@
 /**
  * @file Application behaviour that HTMX attributes can't express. HTMX still
- * performs every request and swap; this script only handles keyboard and
- * focus behaviour, dialogs, and failure alerts. There is no build step: keep
- * it dependency-free and document every function with JSDoc.
+ * performs every request and swap; this script handles keyboard and focus
+ * behaviour, dialogs, card drag and drop, and failure alerts. There is no
+ * build step: keep it dependency-free and document every function with JSDoc.
  *
  * Behaviour is attached through data attributes:
  * - `data-autogrow` (textarea): grows with its content.
@@ -22,6 +22,14 @@
  * - `data-updated-at` (any element): localized "last changed" tooltip.
  * - `data-composer` (dialog): the working-memory composer; typing anywhere
  *   opens it.
+ * - `data-card="id"` (card in a `[data-card-list="id"]` container, inside a
+ *   `[data-list-column]`): dragged between and within lists, or moved with
+ *   Alt+Arrow keys. Each move is shown at once and sent to
+ *   `PUT /cards/{id}/position`, whose response re-renders the affected
+ *   columns; a failed move is undone. Moves are issued from `#card-moves`
+ *   (with `hx-sync="queue all"`). `[data-board-scroll]` scrolls while
+ *   dragging near its edges, and `[data-no-cards]` hides while a card is
+ *   over its list.
  */
 (() => {
   "use strict";
@@ -29,8 +37,21 @@
   /**
    * The parts of an HTMX 4 event's `detail` this script reads.
    * @typedef {object} HtmxEventDetail
-   * @property {{ response?: { status: number } }} [ctx] The request context.
+   * @property {{ response?: { status: number }, cardMove?: CardMove }} [ctx] The request context.
    * @property {unknown} [error] Set on `htmx:error`.
+   * @property {SwapTask[]} [tasks] Set on `htmx:before:swap`; may be edited.
+   */
+
+  /**
+   * One swap of a response, such as a `<template hx type="partial">`.
+   * @typedef {object} SwapTask
+   * @property {Element | string | null} [target]
+   */
+
+  /**
+   * The parts of the HTMX API this script calls.
+   * @typedef {object} Htmx
+   * @property {(verb: string, path: string, context: object) => Promise<void>} ajax
    */
 
   /** A text field this script manages. @typedef {HTMLInputElement | HTMLTextAreaElement} TextField */
@@ -416,6 +437,553 @@
     if (target === dialog || target.closest("[data-modal-close]")) dialog.close();
   }
 
+  // --- Card drag and drop ---------------------------------------------------
+
+  /** How far, in pixels, a mouse press moves before it becomes a drag. */
+  const DRAG_DISTANCE = 8;
+  /** How long, in milliseconds, a touch is held before it becomes a drag. */
+  const TOUCH_DELAY_MS = 250;
+  /** How far, in pixels, a touch may move while being held; further scrolls. */
+  const TOUCH_TOLERANCE = 5;
+  /** Distance from a scrollable edge, in pixels, that scrolls while dragging. */
+  const SCROLL_EDGE = 48;
+  /** Pixels scrolled per animation frame near an edge. */
+  const SCROLL_STEP = 12;
+  /** Duration of the shift and drop animations, in milliseconds. */
+  const MOVE_ANIMATION_MS = 150;
+
+  /**
+   * Where a card is: its list and its index among that list's other cards.
+   * @typedef {object} CardPlace
+   * @property {string} listId
+   * @property {number} index
+   */
+
+  /**
+   * A move sent to the server that hasn't finished.
+   * @typedef {object} CardMove
+   * @property {HTMLElement} card
+   * @property {CardPlace} from Where to put the card back if the move fails.
+   * @property {string[]} listIds The lists it changes.
+   */
+
+  /**
+   * A pointer press on a card. It becomes a drag once the pointer moves far
+   * enough, or for touch, once it is held long enough.
+   * @typedef {object} Press
+   * @property {HTMLElement} card
+   * @property {number} pointerId
+   * @property {boolean} touch
+   * @property {number} startX
+   * @property {number} startY
+   * @property {number} x Latest pointer position.
+   * @property {number} y
+   * @property {number} [timer] The touch hold timer.
+   * @property {Drag} [drag] Set once dragging.
+   */
+
+  /**
+   * An active drag. The card itself stays in the lists, invisible, marking
+   * where it will drop; a copy follows the pointer.
+   * @typedef {object} Drag
+   * @property {HTMLElement} overlay The copy under the pointer.
+   * @property {number} offsetX The pointer's offset within the card.
+   * @property {number} offsetY
+   * @property {CardPlace} from
+   * @property {number} frame The auto-scroll animation frame.
+   */
+
+  /** @type {Press | null} */
+  let press = null;
+  /**
+   * Moves in the order they were sent. `#card-moves` queues them, so the
+   * server applies them in this order too.
+   * @type {CardMove[]}
+   */
+  const pendingMoves = [];
+  /** Set as a drag ends, so its trailing click doesn't open the card. */
+  let suppressClick = false;
+  /** The card to refocus after a move response replaces it. @type {string | null} */
+  let refocusCard = null;
+
+  /**
+   * The HTMX API, loaded before this script.
+   * @returns {Htmx}
+   */
+  function htmxApi() {
+    return /** @type {{ htmx: Htmx }} */ (/** @type {unknown} */ (window)).htmx;
+  }
+
+  /**
+   * Whether animations should be skipped.
+   * @returns {boolean}
+   */
+  function reducedMotion() {
+    return matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  /**
+   * The cards in a `[data-card-list]` container, in order.
+   * @param {Element} list
+   * @returns {HTMLElement[]}
+   */
+  function cardsIn(list) {
+    return /** @type {HTMLElement[]} */ ([...list.querySelectorAll(":scope > [data-card]")]);
+  }
+
+  /**
+   * The `[data-card-list]` container a card is in.
+   * @param {HTMLElement} card
+   * @returns {HTMLElement | null}
+   */
+  function listOf(card) {
+    const list = card.parentElement;
+    return list?.matches("[data-card-list]") ? list : null;
+  }
+
+  /**
+   * The `[data-card-list]` container with the given list id.
+   * @param {string} listId
+   * @returns {HTMLElement | null}
+   */
+  function listById(listId) {
+    return document.querySelector(`[data-card-list="${CSS.escape(listId)}"]`);
+  }
+
+  /**
+   * Where a card currently is.
+   * @param {HTMLElement} card
+   * @returns {CardPlace | null}
+   */
+  function placeOf(card) {
+    const list = listOf(card);
+    if (!list) return null;
+    return { listId: list.dataset.cardList ?? "", index: cardsIn(list).indexOf(card) };
+  }
+
+  /**
+   * Hides a list's "No cards yet" placeholder while it holds a card.
+   * @param {HTMLElement | null} list
+   * @returns {void}
+   */
+  function updatePlaceholder(list) {
+    const placeholder = list?.querySelector(":scope > [data-no-cards]");
+    if (list && placeholder instanceof HTMLElement) placeholder.hidden = cardsIn(list).length > 0;
+  }
+
+  /**
+   * Moves a card to `index` among the other cards of `list`, sliding the
+   * cards it passes into their new places.
+   * @param {HTMLElement} card
+   * @param {HTMLElement} list
+   * @param {number} index
+   * @returns {void}
+   */
+  function placeCard(card, list, index) {
+    const from = listOf(card);
+    const others = cardsIn(list).filter((other) => other !== card);
+    const before = others[index] ?? null;
+    if (from === list && cardsIn(list)[index] === card) return;
+
+    const shifting = [...new Set([...(from ? cardsIn(from) : []), ...others])].filter((other) => other !== card);
+    const tops = new Map(shifting.map((other) => [other, other.getBoundingClientRect().top]));
+    list.insertBefore(card, before);
+    updatePlaceholder(from);
+    updatePlaceholder(list);
+    if (reducedMotion()) return;
+    for (const other of shifting) {
+      const shift = (tops.get(other) ?? 0) - other.getBoundingClientRect().top;
+      if (shift === 0) continue;
+      other.animate([{ transform: `translateY(${shift}px)` }, { transform: "none" }], {
+        duration: MOVE_ANIMATION_MS,
+        easing: "ease",
+      });
+    }
+  }
+
+  /**
+   * Sends a card's move from `from` to where it is now, unless it is back
+   * where it started. The response re-renders the affected columns.
+   * @param {HTMLElement} card
+   * @param {CardPlace} from
+   * @returns {void}
+   */
+  function commitMove(card, from) {
+    const to = placeOf(card);
+    if (!to || (to.listId === from.listId && to.index === from.index)) return;
+    /** @type {CardMove} */
+    const move = { card, from, listIds: [from.listId, to.listId] };
+    pendingMoves.push(move);
+    void htmxApi().ajax("PUT", `/cards/${card.dataset.card}/position`, {
+      source: "#card-moves",
+      swap: "none",
+      values: { list_id: to.listId, position: String(to.index) },
+      cardMove: move,
+    });
+  }
+
+  /**
+   * Where a card dragged to (`x`, `y`) would drop: the list of the column
+   * under the pointer, before the first other card whose middle is below the
+   * pointer. Layout offsets are used rather than on-screen positions, which
+   * shift while cards animate.
+   * @param {HTMLElement} card
+   * @param {number} x
+   * @param {number} y
+   * @returns {{ list: HTMLElement, index: number } | null}
+   */
+  function dropTarget(card, x, y) {
+    const column = document.elementFromPoint(x, y)?.closest("[data-list-column]");
+    const list = column?.querySelector("[data-card-list]");
+    if (!(list instanceof HTMLElement)) return null;
+    const top = y - list.getBoundingClientRect().top - list.clientTop + list.scrollTop;
+    const others = cardsIn(list).filter((other) => other !== card);
+    const index = others.findIndex((other) => top < other.offsetTop + other.offsetHeight / 2);
+    return { list, index: index < 0 ? others.length : index };
+  }
+
+  /**
+   * Moves the dragged copy to the pointer and the card to where it would
+   * drop. Over no list, the card stays where it was last placed.
+   * @returns {void}
+   */
+  function followPointer() {
+    const drag = press?.drag;
+    if (!press || !drag) return;
+    drag.overlay.style.left = `${press.x - drag.offsetX}px`;
+    drag.overlay.style.top = `${press.y - drag.offsetY}px`;
+    const target = dropTarget(press.card, press.x, press.y);
+    if (target) placeCard(press.card, target.list, target.index);
+  }
+
+  /**
+   * Scrolls `element` by one step along `axis` when `at` is near its edge.
+   * @param {Element | null | undefined} element
+   * @param {number} at The pointer's coordinate along `axis`.
+   * @param {"x" | "y"} axis
+   * @returns {boolean} Whether it scrolled.
+   */
+  function scrollNearEdge(element, at, axis) {
+    if (!(element instanceof HTMLElement)) return false;
+    const rect = element.getBoundingClientRect();
+    const [start, end] = axis === "x" ? [rect.left, rect.right] : [rect.top, rect.bottom];
+    const step = at < start + SCROLL_EDGE ? -SCROLL_STEP : at > end - SCROLL_EDGE ? SCROLL_STEP : 0;
+    if (step === 0) return false;
+    const position = () => (axis === "x" ? element.scrollLeft : element.scrollTop);
+    const before = position();
+    element.scrollBy(axis === "x" ? { left: step } : { top: step });
+    return position() !== before;
+  }
+
+  /**
+   * Each animation frame of a drag, scrolls the board sideways and the list
+   * under the pointer up or down when the pointer is near their edges.
+   * @returns {void}
+   */
+  function autoScroll() {
+    const drag = press?.drag;
+    if (!press || !drag) return;
+    const board = press.card.closest("[data-board-scroll]");
+    const column = document.elementFromPoint(press.x, press.y)?.closest("[data-list-column]");
+    const sideways = scrollNearEdge(board, press.x, "x");
+    const vertical = scrollNearEdge(column?.querySelector("[data-card-list]"), press.y, "y");
+    if (sideways || vertical) followPointer();
+    drag.frame = requestAnimationFrame(autoScroll);
+  }
+
+  /**
+   * Turns the press into a drag: hides the card, leaving its space, and
+   * shows a lifted copy under the pointer, as in the original app.
+   * @returns {void}
+   */
+  function startDrag() {
+    if (!press || press.drag) return;
+    const { card } = press;
+    const from = placeOf(card);
+    if (!from || !card.isConnected) {
+      press = null;
+      return;
+    }
+    const rect = card.getBoundingClientRect();
+    const overlay = /** @type {HTMLElement} */ (card.cloneNode(true));
+    for (const attribute of [...overlay.attributes]) {
+      if (attribute.name !== "class") overlay.removeAttribute(attribute.name);
+    }
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.classList.remove("shadow-sm", "border-zinc-700", "transition-all");
+    overlay.classList.add("shadow-xl", "border-violet-500", "rotate-1");
+    Object.assign(overlay.style, {
+      position: "fixed",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      margin: "0",
+      zIndex: "50",
+      pointerEvents: "none",
+    });
+    document.body.append(overlay);
+    card.style.transition = "none";
+    card.style.opacity = "0";
+    document.documentElement.dataset.draggingCard = "";
+    getSelection()?.removeAllRanges();
+    press.drag = {
+      overlay,
+      offsetX: press.startX - rect.left,
+      offsetY: press.startY - rect.top,
+      from,
+      frame: requestAnimationFrame(autoScroll),
+    };
+    followPointer();
+  }
+
+  /**
+   * Animates the dragged copy onto the card's place, then shows the card.
+   * @param {HTMLElement} overlay
+   * @param {HTMLElement} card
+   * @returns {void}
+   */
+  function settleOverlay(overlay, card) {
+    const finish = () => {
+      overlay.remove();
+      card.style.opacity = "";
+      card.style.transition = "";
+    };
+    if (!card.isConnected || reducedMotion()) return finish();
+    const from = overlay.getBoundingClientRect();
+    const to = card.getBoundingClientRect();
+    const shift = `translate(${to.left - from.left}px, ${to.top - from.top}px)`;
+    overlay
+      .animate([{ transform: "none" }, { transform: shift, rotate: "0deg" }], {
+        duration: MOVE_ANIMATION_MS,
+        easing: "ease",
+        fill: "forwards",
+      })
+      .finished.then(finish, finish);
+  }
+
+  /**
+   * Ends a press. A drag drops the card where it is and sends the move, or
+   * when cancelled, puts it back where it started.
+   * @param {boolean} cancelled
+   * @returns {void}
+   */
+  function endPress(cancelled) {
+    const current = press;
+    press = null;
+    if (!current) return;
+    clearTimeout(current.timer);
+    const { card, drag } = current;
+    if (!drag) return;
+    cancelAnimationFrame(drag.frame);
+    delete document.documentElement.dataset.draggingCard;
+    const list = listById(drag.from.listId);
+    if (cancelled && list && card.isConnected) placeCard(card, list, drag.from.index);
+    suppressClick = true;
+    setTimeout(() => (suppressClick = false), 0);
+    settleOverlay(drag.overlay, card);
+    if (!cancelled && card.isConnected) commitMove(card, drag.from);
+  }
+
+  /**
+   * Starts tracking a primary-button or touch press on a card.
+   * @param {PointerEvent} event
+   * @returns {void}
+   */
+  function onCardPointerDown(event) {
+    if (press || !event.isPrimary || event.button !== 0) return;
+    const target = event.target;
+    const card = target instanceof Element ? target.closest("[data-card]") : null;
+    if (!(card instanceof HTMLElement) || !listOf(card)) return;
+    const { clientX: x, clientY: y } = event;
+    const touch = event.pointerType === "touch";
+    press = { card, pointerId: event.pointerId, touch, startX: x, startY: y, x, y };
+    if (touch) press.timer = setTimeout(startDrag, TOUCH_DELAY_MS);
+  }
+
+  /**
+   * Starts a mouse drag once the pointer has moved far enough, gives up on
+   * a touch that moves before it is held long enough (letting it scroll),
+   * and follows the pointer while dragging.
+   * @param {PointerEvent} event
+   * @returns {void}
+   */
+  function onPointerMove(event) {
+    if (!press || event.pointerId !== press.pointerId) return;
+    press.x = event.clientX;
+    press.y = event.clientY;
+    // The button was released outside the window.
+    if (!press.touch && event.buttons === 0) return endPress(false);
+    if (press.drag) return followPointer();
+    const distance = Math.hypot(press.x - press.startX, press.y - press.startY);
+    if (press.touch) {
+      if (distance > TOUCH_TOLERANCE) endPress(true);
+    } else if (distance > DRAG_DISTANCE) {
+      startDrag();
+    }
+  }
+
+  /**
+   * Drops the card when the press ends.
+   * @param {PointerEvent} event
+   * @returns {void}
+   */
+  function onPointerUp(event) {
+    if (press && event.pointerId === press.pointerId) endPress(false);
+  }
+
+  /**
+   * Cancels the drag when the browser takes the pointer, e.g. to scroll.
+   * @param {PointerEvent} event
+   * @returns {void}
+   */
+  function onPointerCancel(event) {
+    if (press && event.pointerId === press.pointerId) endPress(true);
+  }
+
+  /**
+   * Escape cancels a drag.
+   * @param {KeyboardEvent} event
+   * @returns {void}
+   */
+  function onDragKeydown(event) {
+    if (!press?.drag || event.key !== "Escape") return;
+    event.preventDefault();
+    endPress(true);
+  }
+
+  /**
+   * Keeps a touch drag from scrolling the page. Registered as non-passive.
+   * @param {TouchEvent} event
+   * @returns {void}
+   */
+  function onTouchMove(event) {
+    if (press?.drag) event.preventDefault();
+  }
+
+  /**
+   * Keeps a touch held on a card from opening the context menu.
+   * @param {Event} event
+   * @returns {void}
+   */
+  function onCardContextMenu(event) {
+    if (press?.touch) event.preventDefault();
+  }
+
+  /**
+   * Swallows the click that follows a drag, so dropping doesn't open the
+   * card. Registered as a capture listener so it runs before HTMX's.
+   * @param {MouseEvent} event
+   * @returns {void}
+   */
+  function onClickAfterDrag(event) {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  /**
+   * Alt+Up/Down moves the focused card within its list, and Alt+Left/Right
+   * moves it to the same place in the neighbouring list. Enter still opens it.
+   * @param {KeyboardEvent} event
+   * @returns {void}
+   */
+  function onCardKeydown(event) {
+    const card = event.target;
+    if (!(card instanceof HTMLElement) || !card.matches("[data-card]") || press) return;
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const list = listOf(card);
+    const from = placeOf(card);
+    if (!list || !from) return;
+    let target = list;
+    let index = from.index;
+    if (event.key === "ArrowUp") {
+      index -= 1;
+    } else if (event.key === "ArrowDown") {
+      index += 1;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      const lists = [...document.querySelectorAll("[data-card-list]")];
+      const next = lists[lists.indexOf(list) + (event.key === "ArrowLeft" ? -1 : 1)];
+      if (next instanceof HTMLElement) target = next;
+      index = Math.min(index, cardsIn(target).filter((other) => other !== card).length);
+    } else {
+      return;
+    }
+    // Alt+Left/Right would otherwise navigate the history.
+    event.preventDefault();
+    if (index < 0 || index >= cardsIn(target).filter((other) => other !== card).length + 1) return;
+    placeCard(card, target, index);
+    // Moving the card in the document took its focus.
+    card.focus();
+    card.scrollIntoView({ block: "nearest", inline: "nearest" });
+    commitMove(card, from);
+  }
+
+  /**
+   * The pending card move an HTMX event belongs to, if any.
+   * @param {Event} event
+   * @returns {CardMove | undefined}
+   */
+  function eventMove(event) {
+    return /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail?.ctx?.cardMove;
+  }
+
+  /**
+   * Before a move response re-renders its columns, skips columns that a
+   * later pending move (or the card being dragged) still changes; that
+   * move's response re-renders them. Notes the focused card, if replaced.
+   * @param {Event} event `htmx:before:swap`
+   * @returns {void}
+   */
+  function onMoveBeforeSwap(event) {
+    const move = eventMove(event);
+    const tasks = /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail?.tasks;
+    if (!move || !tasks) return;
+    const later = new Set(pendingMoves.slice(pendingMoves.indexOf(move) + 1).flatMap((other) => other.listIds));
+    const focused = document.activeElement?.closest("[data-card]");
+    for (let i = tasks.length - 1; i >= 0; i -= 1) {
+      const target = tasks[i].target;
+      const element = typeof target === "string" ? document.querySelector(target) : target;
+      if (!element) continue;
+      const listId = element.querySelector("[data-card-list]")?.getAttribute("data-card-list");
+      if ((listId && later.has(listId)) || (press?.drag && element.contains(press.card))) {
+        tasks.splice(i, 1);
+      } else if (focused instanceof HTMLElement && element.contains(focused)) {
+        refocusCard = focused.dataset.card ?? null;
+      }
+    }
+  }
+
+  /**
+   * Refocuses the card a move response replaced.
+   * @param {Event} event `htmx:after:swap`
+   * @returns {void}
+   */
+  function onMoveAfterSwap(event) {
+    if (!eventMove(event) || refocusCard === null) return;
+    const card = document.querySelector(`[data-card="${CSS.escape(refocusCard)}"]`);
+    refocusCard = null;
+    if (card instanceof HTMLElement && (document.activeElement === document.body || !document.activeElement)) {
+      card.focus();
+    }
+  }
+
+  /**
+   * Forgets a finished move, and puts the card back if the server refused
+   * it or couldn't be reached. Server errors also show the alert.
+   * @param {Event} event `htmx:finally:request`
+   * @returns {void}
+   */
+  function onMoveFinished(event) {
+    const move = eventMove(event);
+    if (!move) return;
+    pendingMoves.splice(pendingMoves.indexOf(move), 1);
+    const status = /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail.ctx?.response?.status;
+    if (status !== undefined && status < 400) return;
+    const list = listById(move.from.listId);
+    if (list && move.card.isConnected) placeCard(move.card, list, move.from.index);
+  }
+
   // --- Request outcomes -----------------------------------------------------
 
   /** @type {number | undefined} */
@@ -541,4 +1109,17 @@
   document.addEventListener("htmx:response:error", onResponseError);
   document.addEventListener("htmx:error", onRequestError);
   document.addEventListener("mouseover", onTimestampHover);
+  document.addEventListener("pointerdown", onCardPointerDown);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerCancel);
+  window.addEventListener("blur", () => endPress(true));
+  window.addEventListener("click", onClickAfterDrag, true);
+  document.addEventListener("keydown", onDragKeydown);
+  document.addEventListener("keydown", onCardKeydown);
+  document.addEventListener("touchmove", onTouchMove, { passive: false });
+  document.addEventListener("contextmenu", onCardContextMenu);
+  document.addEventListener("htmx:before:swap", onMoveBeforeSwap);
+  document.addEventListener("htmx:after:swap", onMoveAfterSwap);
+  document.addEventListener("htmx:finally:request", onMoveFinished);
 })();

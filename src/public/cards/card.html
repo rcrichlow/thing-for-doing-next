@@ -2,7 +2,9 @@
             type="button"
             id="card-{{id}}"
             data-testid="card-item"
-            class="group block w-full text-left bg-zinc-800 p-3 rounded-lg shadow-sm border border-zinc-700 hover:shadow-md hover:border-violet-500 cursor-pointer transition-all duration-200 ease-in-out relative"
+            data-card="{{id}}"
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight"
+            class="group block w-full text-left bg-zinc-800 p-3 rounded-lg shadow-sm border border-zinc-700 hover:shadow-md hover:border-violet-500 cursor-grab active:cursor-grabbing transition-all duration-200 ease-in-out relative"
             hx-get="/cards/{{id}}"
             hx-target="#modal-root"
             hx-swap="innerHTML">

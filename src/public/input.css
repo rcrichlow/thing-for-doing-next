@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+/* While a card is dragged (see app.js), nothing else shows its own cursor
+   or selects text. */
+html[data-dragging-card],
+html[data-dragging-card] * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* Long-pressing a card starts a drag on touch screens, not a callout. */
+[data-card] {
+  -webkit-touch-callout: none;
+}
