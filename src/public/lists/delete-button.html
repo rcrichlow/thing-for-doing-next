@@ -1,0 +1,13 @@
+        <button
+            type="button"
+            aria-label="Delete {{title}} list"
+            data-testid="delete-list-btn-{{id}}"
+            class="absolute right-3 top-3 rounded-md p-1.5 text-red-500 opacity-0 transition-all hover:bg-red-900/20 hover:text-red-400 group-hover/list:opacity-100 focus-visible:opacity-100"
+            hx-delete="/lists/{{id}}"
+            hx-target="#list-{{id}}"
+            hx-swap="outerHTML"
+            hx-confirm="Are you sure you want to delete this list? This action cannot be undone.">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12m-9 0V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v11m4-11v11m5-11v11a2 2 0 01-2 2H8a2 2 0 01-2-2V7" />
+            </svg>
+        </button>

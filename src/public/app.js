@@ -14,6 +14,12 @@
  * - `data-inline-edit` (form): click-to-edit field. Enter or leaving the
  *   `[data-inline-field]` saves; Escape, or saving blank or unchanged text,
  *   clicks its hidden `[data-inline-cancel]` button to restore the view.
+ *   With `data-inline-allow-blank`, blank text is saved instead. In a
+ *   textarea without `data-submit-on-enter`, Enter adds a line.
+ * - `data-modal` (dialog): opened as a modal when inserted. Escape, a
+ *   backdrop click, or a `[data-modal-close]` button closes it.
+ * - `data-sets-confirm` (select): choosing an option copies its
+ *   `data-confirm` to the form's `hx-confirm`.
  * - `data-local-date` (time): shows its `datetime` as a local date.
  * - `data-updated-at` (any element): localized "last changed" tooltip.
  * - `data-composer` (dialog): the working-memory composer; typing anywhere
@@ -109,6 +115,10 @@
     for (const element of selfAndDescendants(root, "[data-focus]")) {
       element.removeAttribute("data-focus");
       if (isTextField(element)) focusAtEnd(element);
+    }
+    for (const element of selfAndDescendants(root, "dialog[data-modal]")) {
+      const dialog = /** @type {HTMLDialogElement} */ (element);
+      if (!dialog.open) dialog.showModal();
     }
   }
 
@@ -323,8 +333,8 @@
   }
 
   /**
-   * Saves an edit, unless the text is blank or unchanged, which just leaves
-   * edit mode. Runs at most once per form.
+   * Saves an edit, unless the text is unchanged or blank (when blank isn't
+   * allowed), which just leaves edit mode. Runs at most once per form.
    * @param {HTMLFormElement} form A `data-inline-edit` form.
    * @returns {void}
    */
@@ -333,7 +343,8 @@
     const field = form.querySelector("[data-inline-field]");
     if (!isTextField(field)) return;
     const value = field.value.trim();
-    if (value === "" || value === field.defaultValue.trim()) return cancelEdit(form);
+    const blank = value === "" && !form.matches("[data-inline-allow-blank]");
+    if (blank || value === field.defaultValue.trim()) return cancelEdit(form);
     form.dataset.done = "true";
     form.requestSubmit();
   }
@@ -341,7 +352,8 @@
   /**
    * Keyboard handling in text fields: Enter saves inline edits and submits
    * `data-submit-on-enter` textareas (Shift+Enter inserts a newline), and
-   * Escape cancels inline edits and `data-cancel-on-escape` forms.
+   * Escape cancels inline edits and `data-cancel-on-escape` forms. Inline
+   * textareas without `data-submit-on-enter` keep Enter for new lines.
    * @param {KeyboardEvent} event
    * @returns {void}
    */
@@ -364,10 +376,12 @@
       return;
     }
     if (event.key !== "Enter" || event.shiftKey) return;
+    const submitsOnEnter = field.matches("[data-submit-on-enter]");
     if (inline) {
+      if (field instanceof HTMLTextAreaElement && !submitsOnEnter) return;
       event.preventDefault();
       saveEdit(inline);
-    } else if (field instanceof HTMLTextAreaElement && field.matches("[data-submit-on-enter]")) {
+    } else if (field instanceof HTMLTextAreaElement && submitsOnEnter) {
       event.preventDefault();
       form?.requestSubmit();
     }
@@ -383,6 +397,37 @@
     if (!isTextField(field) || !field.matches("[data-inline-field]")) return;
     const form = field.form;
     if (form?.matches("[data-inline-edit]")) saveEdit(form);
+  }
+
+  // --- Dialogs --------------------------------------------------------------
+
+  /**
+   * Closes a `data-modal` dialog from its close buttons or a backdrop click,
+   * which targets the dialog element itself. The dialog stays in the
+   * document so any save it started can still swap in its response. Dialogs
+   * have no `id`: HTMX's settle step would otherwise copy the old dialog's
+   * attributes onto its replacement and then remove `open`.
+   * @param {MouseEvent} event
+   * @returns {void}
+   */
+  function onModalClick(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const dialog = target.closest("dialog[data-modal]");
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    if (target === dialog || target.closest("[data-modal-close]")) dialog.close();
+  }
+
+  /**
+   * Copies the chosen option's `data-confirm` to its form's `hx-confirm`.
+   * @param {Event} event
+   * @returns {void}
+   */
+  function onConfirmSelect(event) {
+    const select = event.target;
+    if (!(select instanceof HTMLSelectElement) || !select.matches("[data-sets-confirm]")) return;
+    const message = select.selectedOptions[0]?.dataset.confirm;
+    if (message) select.form?.setAttribute("hx-confirm", message);
   }
 
   // --- Request outcomes -----------------------------------------------------
@@ -499,6 +544,8 @@
   window.addEventListener("keydown", onTypeAnywhere);
   document.addEventListener("keydown", onFieldKeydown);
   document.addEventListener("click", onComposerClick);
+  document.addEventListener("click", onModalClick);
+  document.addEventListener("change", onConfirmSelect);
   document.addEventListener("click", onAlertDismiss);
   // `cancel` and `submit` are captured: `cancel` doesn't bubble, and the
   // submit guard must run before HTMX's listener on the form.

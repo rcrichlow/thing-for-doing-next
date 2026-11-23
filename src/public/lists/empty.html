@@ -1,0 +1,31 @@
+<div class="w-full h-full flex items-center justify-center">
+    <div class="bg-zinc-900 p-8 rounded-xl shadow-lg border border-zinc-800 text-center max-w-md">
+        <div class="mx-auto w-16 h-16 bg-violet-900/20 rounded-full flex items-center justify-center mb-4">
+            <svg class="w-8 h-8 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+        </div>
+        <h3 class="text-lg font-bold text-zinc-100 mb-2">Start your workflow</h3>
+        <p class="text-zinc-400 mb-6">Create your first list to start adding cards and tasks to this board.</p>
+        <form data-require-field="title" hx-post="/boards/{{board_id}}/lists" hx-target="#board-lists" hx-swap="innerHTML">
+            <input
+                id="new-list-title"
+                type="text"
+                name="title"
+                value="{{title}}"
+                aria-label="List title"
+                placeholder="List Title (e.g. To Do)"
+                autocomplete="off"
+                data-focus
+                data-testid="list-title-input"
+                class="w-full px-4 py-2 bg-zinc-800 border border-zinc-700 text-zinc-100 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-zinc-500">
+            <p class="-mt-1 mb-3 text-xs text-red-400 empty:hidden" role="alert">{{message}}</p>
+            <button
+                type="submit"
+                data-testid="add-list-btn"
+                class="w-full bg-violet-600 text-white px-4 py-2 rounded-lg hover:bg-violet-500 transition-colors disabled:opacity-50 font-medium">
+                Create List
+            </button>
+        </form>
+    </div>
+</div>

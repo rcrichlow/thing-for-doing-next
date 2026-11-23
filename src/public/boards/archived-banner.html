@@ -1,16 +1,16 @@
-    <div id="board-banner" class="border-b border-amber-900/50 bg-amber-900/30 px-6 py-2 text-center text-sm text-amber-200">
-        This board is archived.
+    <div id="board-banner" class="bg-amber-900/30 border-b border-amber-900/50 px-6 py-2 text-center text-amber-200 text-sm flex items-center justify-center gap-4">
+        <span>This board is archived.</span>
         <button
             type="button"
             data-testid="unarchive-board-btn"
-            class="ml-2 font-medium underline hover:text-amber-100"
+            class="text-amber-100 font-medium underline hover:text-green-300"
             hx-post="/boards/{{id}}/unarchive?from=board">
             Unarchive
         </button>
         <button
             type="button"
             data-testid="delete-board-btn"
-            class="ml-2 font-medium underline hover:text-amber-100"
+            class="text-amber-100 font-medium underline hover:text-red-300"
             hx-delete="/boards/{{id}}?from=board"
             hx-confirm="Permanently delete board &quot;{{title}}&quot;? This cannot be undone.">
             Delete Permanently

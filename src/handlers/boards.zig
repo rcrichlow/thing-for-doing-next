@@ -9,6 +9,7 @@ const std = @import("std");
 const http = @import("../http.zig");
 const template = @import("../template.zig");
 const boards = @import("../boards.zig");
+const list_handlers = @import("lists.zig");
 
 const Io = std.Io;
 const Context = http.Context;
@@ -35,7 +36,6 @@ const ArchivedPill = Tmpl("archived-pill");
 const HeaderMiddle = Tmpl("header-middle");
 const Actions = Tmpl("actions");
 const HeaderEnd = Tmpl("header-end");
-const ShowBody = Tmpl("show-body");
 const Title = Tmpl("title");
 const TitleEdit = Tmpl("title-edit");
 const NotFound = Tmpl("not-found");
@@ -81,7 +81,8 @@ pub fn show(ctx: *Context, id_text: []const u8) !void {
     const board = try findBoard(ctx, id_text) orelse
         return ctx.page(.{ .active = .boards, .status = .not_found }, NotFound.render, .{.{}});
     const page_title = try std.fmt.allocPrint(ctx.arena, "{s} · {s}", .{ board.title, http.app_title });
-    return ctx.page(.{ .active = .boards, .title = page_title, .width = .full }, writeShow, .{board});
+    const columns = try list_handlers.loadColumns(ctx, board.id);
+    return ctx.page(.{ .active = .boards, .title = page_title }, writeShow, .{ board, columns });
 }
 
 /// GET /boards/{id}/title: the read-only title, used to cancel editing.
@@ -226,10 +227,13 @@ fn writeArchived(writer: *Io.Writer, list: []const Board) Io.Writer.Error!void {
     try GridEnd.render(writer, .{});
 }
 
-fn writeShow(writer: *Io.Writer, board: Board) Io.Writer.Error!void {
+fn writeShow(writer: *Io.Writer, board: Board, columns: []const list_handlers.Column) Io.Writer.Error!void {
     try ShowStart.render(writer, .{});
     try writeHeader(writer, board);
-    try ShowBody.render(writer, .{});
+    try writer.writeAll("<div class=\"flex-1 overflow-x-auto overflow-y-hidden p-6\">\n<div id=\"board-lists\" class=\"flex h-full gap-6\">\n");
+    try list_handlers.writeContents(writer, .{ .board_id = board.id, .columns = columns });
+    // Card details and list deletion dialogs are loaded here.
+    try writer.writeAll("</div>\n</div>\n<div id=\"modal-root\"></div>\n</div>\n");
 }
 
 /// The archived banner (if archived) and the header bar, wrapped in
@@ -241,7 +245,6 @@ fn writeHeader(writer: *Io.Writer, board: Board) Io.Writer.Error!void {
     if (board.isArchived()) try ArchivedBanner.render(writer, values);
     try HeaderStart.render(writer, .{});
     try writeTitle(writer, board);
-    if (board.isArchived()) try ArchivedPill.render(writer, .{});
     try HeaderMiddle.render(writer, .{});
     if (board.isArchived()) {
         try HeaderEnd.render(writer, .{ .back_url = "/boards/archived", .back_label = "Back to Archived" });
@@ -252,9 +255,12 @@ fn writeHeader(writer: *Io.Writer, board: Board) Io.Writer.Error!void {
     try writer.writeAll("</div>\n");
 }
 
+/// The title, with the archived pill beside it, as in the original app.
 fn writeTitle(writer: *Io.Writer, board: Board) Io.Writer.Error!void {
     var id: Id = .{};
     try Title.render(writer, .{ .id = id.of(board.id), .title = board.title });
+    if (board.isArchived()) try ArchivedPill.render(writer, .{});
+    try writer.writeAll("</h1>\n");
 }
 
 fn writeTitleEdit(writer: *Io.Writer, board: Board) Io.Writer.Error!void {

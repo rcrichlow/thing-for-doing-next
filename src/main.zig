@@ -7,6 +7,8 @@ const migrate = @import("migrate.zig");
 const migrations = @import("migrations");
 const template = @import("template.zig");
 const boards = @import("handlers/boards.zig");
+const lists = @import("handlers/lists.zig");
+const cards = @import("handlers/cards.zig");
 const working_memory = @import("handlers/working_memory.zig");
 
 const Io = std.Io;
@@ -297,6 +299,71 @@ fn route(ctx: *Context) !void {
         else => ctx.methodNotAllowed("POST"),
     };
 
+    if (pathParam("/boards/{id}/lists", path)) |id| return switch (ctx.method) {
+        .POST => lists.create(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
+    };
+
+    if (pathParam("/lists/{id}/edit", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => lists.edit(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/lists/{id}", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => lists.show(ctx, id),
+        .PUT => lists.rename(ctx, id),
+        .DELETE => lists.destroy(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, PUT, DELETE"),
+    };
+
+    if (pathParam("/lists/{id}/delete", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => lists.deleteDialog(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/lists/{id}/cards", path)) |id| return switch (ctx.method) {
+        .POST => cards.create(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
+    };
+
+    if (pathParam("/lists/{id}/cards/new", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.newForm(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/lists/{id}/cards/button", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.addButton(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/cards/{id}", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.show(ctx, id),
+        .DELETE => cards.destroy(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, DELETE"),
+    };
+
+    if (pathParam("/cards/{id}/title", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.showTitle(ctx, id),
+        .PUT => cards.updateTitle(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, PUT"),
+    };
+
+    if (pathParam("/cards/{id}/title/edit", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.editTitle(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
+    if (pathParam("/cards/{id}/description", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.showDescription(ctx, id),
+        .PUT => cards.updateDescription(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, PUT"),
+    };
+
+    if (pathParam("/cards/{id}/description/edit", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => cards.editDescription(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+
     return ctx.notFound();
 }
 
@@ -322,8 +389,12 @@ test {
     _ = template;
     _ = working_memory;
     _ = boards;
+    _ = lists;
+    _ = cards;
     _ = @import("working_memory.zig");
     _ = @import("boards.zig");
+    _ = @import("lists.zig");
+    _ = @import("cards.zig");
     _ = @import("text.zig");
 }
 
@@ -380,6 +451,30 @@ test "board routes enforce methods" {
     try expectHeader(response, "allow: POST\r\n");
     response = try testRequest("PUT /boards/1 HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
     try expectHeader(response, "allow: GET, HEAD, DELETE\r\n");
+}
+
+test "list routes enforce methods" {
+    var buffer: [1024]u8 = undefined;
+    var response = try testRequest("GET /boards/1/lists HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: POST\r\n");
+    response = try testRequest("POST /lists/1 HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD, PUT, DELETE\r\n");
+    response = try testRequest("DELETE /lists/1/edit HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD\r\n");
+    response = try testRequest("POST /lists/1/delete HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD\r\n");
+}
+
+test "card routes enforce methods" {
+    var buffer: [1024]u8 = undefined;
+    var response = try testRequest("GET /lists/1/cards HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: POST\r\n");
+    response = try testRequest("PUT /cards/1 HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD, DELETE\r\n");
+    response = try testRequest("DELETE /cards/1/description HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD, PUT\r\n");
+    response = try testRequest("POST /cards/1/title/edit HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD\r\n");
 }
 
 test "entry routes enforce methods and match ids" {

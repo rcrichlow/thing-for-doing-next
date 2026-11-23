@@ -129,7 +129,7 @@ test.describe("board page", () => {
 
     await page.getByRole("button", { name: "Roadmap 2027" }).click();
     await input.fill("Plans");
-    await page.getByText("Lists and cards will appear here.").click();
+    await page.getByRole("heading", { name: "Start your workflow" }).click();
     await expect(page.getByRole("button", { name: "Plans" })).toBeVisible();
 
     await page.reload();

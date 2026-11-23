@@ -1,0 +1,9 @@
+<button
+    type="button"
+    data-testid="add-card-btn"
+    class="w-full text-left text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 px-2 py-1.5 rounded transition-colors text-sm flex items-center"
+    hx-get="/lists/{{list_id}}/cards/new"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <span class="text-lg mr-2 leading-none">+</span> Add a card
+</button>

@@ -1,0 +1,8 @@
+<button
+    type="button"
+    id="card-detail-description-field"
+    data-testid="card-detail-description-text"
+    class="block w-full text-left cursor-pointer rounded-md px-3 py-2 text-sm hover:bg-zinc-800 min-h-[2rem] text-zinc-300 whitespace-pre-wrap break-words"
+    hx-get="/cards/{{id}}/description/edit"
+    hx-target="this"
+    hx-swap="outerHTML">{{description}}</button>

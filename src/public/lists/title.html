@@ -1,0 +1,8 @@
+<button
+    id="list-title-{{id}}"
+    type="button"
+    title="Edit list title"
+    class="w-full text-left font-semibold cursor-pointer transition-colors px-2 py-1 bg-transparent border-0 text-zinc-200 rounded break-words"
+    hx-get="/lists/{{id}}/edit"
+    hx-target="this"
+    hx-swap="outerHTML">{{title}}</button>

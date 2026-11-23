@@ -1,0 +1,35 @@
+<form
+    class="bg-zinc-800 p-3 rounded shadow-sm border border-zinc-700"
+    data-require-field="title"
+    data-cancel-on-escape
+    hx-post="/lists/{{list_id}}/cards"
+    hx-target="this"
+    hx-swap="outerHTML">
+    <div class="text-red-400 text-xs mb-2 empty:hidden" role="alert">{{message}}</div>
+    <input
+        type="text"
+        name="title"
+        value="{{title}}"
+        aria-label="Card title"
+        placeholder="Enter card title..."
+        autocomplete="off"
+        data-focus
+        data-testid="card-title-input"
+        class="w-full px-2 py-1 bg-zinc-900 border border-zinc-700 rounded mb-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-zinc-600">
+    <div class="flex justify-between items-center">
+        <button
+            type="submit"
+            class="bg-violet-600 text-white px-3 py-1 rounded text-sm hover:bg-violet-500 disabled:opacity-50">
+            Add
+        </button>
+        <button
+            type="button"
+            data-cancel
+            class="text-zinc-400 hover:text-zinc-300 text-sm"
+            hx-get="/lists/{{list_id}}/cards/button"
+            hx-target="closest form"
+            hx-swap="outerHTML">
+            Cancel
+        </button>
+    </div>
+</form>

@@ -1,10 +1,10 @@
 # Thing for Doing Next
 
-An experimental personal application built to evaluate Zig, server-rendered HTML, HTMX, and PostgreSQL. This repository intentionally starts with infrastructure only; it does not port product behavior from the Rails/React application.
+An experimental personal application built to evaluate Zig, server-rendered HTML, HTMX, and PostgreSQL.
 
 ## Stack
 
-- Zig HTTP server, currently dependency-free
+- Zig HTTP server with a libpq PostgreSQL client
 - PostgreSQL 17
 - Docker Compose for local development and deployment-like validation
 - HTMX 4.0.0-beta6, vendored locally and served as an embedded static asset
@@ -87,7 +87,11 @@ The keyboard behaviour is in `src/public/app.js`, a small dependency-free script
 
 `/boards` lists active boards in creation order, with a tile for creating one. Archiving a board (with confirmation) moves it to `/boards/archived`, where it can be restored or permanently deleted. A board's page shows its title, which is edited in place (Enter or clicking away saves, Escape cancels), and actions to archive or delete it; archived boards show a banner instead and stay editable.
 
-Lists, cards, drag-and-drop, and sending working-memory entries to a board are being built next, in that order.
+Board pages follow the original app's board view: lists are columns in creation order, with titles edited in place and a delete button revealed on hover. A board with no lists shows a "Start your workflow" form; otherwise an add-list form follows the last list. Lists remain editable on archived boards, and deleting a board also deletes its lists and cards.
+
+Each list ends with "Add a card", which appends a card to the list. Clicking a card opens its details dialog, where the title and description are edited in place (the description is multiline and may be cleared) and the card can be deleted. Deleting an empty list asks for confirmation; deleting a list with cards opens a dialog that can move them, in order, to the end of another list on the board, or delete them with it.
+
+Drag-and-drop and sending working-memory entries to a board are being built next, in that order.
 
 ## Browser Tests
 
@@ -117,7 +121,7 @@ The target workflows are:
 - Boards, lists, and cards, including inline titles, card details, archived boards, and list deletion with optional card transfer.
 - Drag-and-drop card reordering within and between lists.
 
-Working Memory and board management are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
+Working Memory, board management, lists, and cards are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop will require a focused client-side JavaScript module rather than a full SPA.
 
 ## Inspiration
 

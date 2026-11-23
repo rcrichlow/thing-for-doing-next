@@ -1,0 +1,13 @@
+<form id="list-title-{{id}}" data-inline-edit hx-put="/lists/{{id}}" hx-target="this" hx-swap="outerHTML">
+    <input
+        type="text"
+        name="title"
+        value="{{title}}"
+        aria-label="List title"
+        autocomplete="off"
+        data-focus
+        data-inline-field
+        data-testid="list-title-edit-input-{{id}}"
+        class="w-full font-semibold bg-zinc-800 text-zinc-100 px-2 py-1 rounded focus:outline-none outline outline-1 outline-zinc-700 focus:outline-2 focus:outline-violet-500">
+    <button type="button" hidden data-inline-cancel hx-get="/lists/{{id}}" hx-target="#list-title-{{id}}" hx-swap="outerHTML"></button>
+</form>

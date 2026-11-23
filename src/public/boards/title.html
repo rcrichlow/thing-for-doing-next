@@ -1,9 +1,8 @@
-<h1 id="board-title" class="min-w-0 text-2xl font-bold text-zinc-100">
+<h1 id="board-title" class="text-2xl font-bold text-zinc-100 flex items-center gap-3">
     <button
         type="button"
         title="Edit board title"
-        class="max-w-full truncate rounded-md px-2 py-1 text-left transition-colors hover:bg-zinc-800"
+        class="flex items-center cursor-pointer transition-colors px-3 py-1 bg-transparent border-0 text-2xl font-bold text-zinc-100 rounded"
         hx-get="/boards/{{id}}/title/edit"
         hx-target="#board-title"
         hx-swap="outerHTML">{{title}}</button>
-</h1>

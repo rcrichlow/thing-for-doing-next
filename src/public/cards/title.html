@@ -1,0 +1,8 @@
+<button
+    type="button"
+    id="card-detail-title-field"
+    data-testid="card-detail-title-text"
+    class="block w-full text-left cursor-pointer rounded-md px-3 py-2 text-sm hover:bg-zinc-800 text-zinc-100 break-words"
+    hx-get="/cards/{{id}}/title/edit"
+    hx-target="this"
+    hx-swap="outerHTML">{{title}}</button>
