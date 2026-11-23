@@ -18,8 +18,6 @@
  *   textarea without `data-submit-on-enter`, Enter adds a line.
  * - `data-modal` (dialog): opened as a modal when inserted. Escape, a
  *   backdrop click, or a `[data-modal-close]` button closes it.
- * - `data-sets-confirm` (select): choosing an option copies its
- *   `data-confirm` to the form's `hx-confirm`.
  * - `data-local-date` (time): shows its `datetime` as a local date.
  * - `data-updated-at` (any element): localized "last changed" tooltip.
  * - `data-composer` (dialog): the working-memory composer; typing anywhere
@@ -418,18 +416,6 @@
     if (target === dialog || target.closest("[data-modal-close]")) dialog.close();
   }
 
-  /**
-   * Copies the chosen option's `data-confirm` to its form's `hx-confirm`.
-   * @param {Event} event
-   * @returns {void}
-   */
-  function onConfirmSelect(event) {
-    const select = event.target;
-    if (!(select instanceof HTMLSelectElement) || !select.matches("[data-sets-confirm]")) return;
-    const message = select.selectedOptions[0]?.dataset.confirm;
-    if (message) select.form?.setAttribute("hx-confirm", message);
-  }
-
   // --- Request outcomes -----------------------------------------------------
 
   /** @type {number | undefined} */
@@ -545,7 +531,6 @@
   document.addEventListener("keydown", onFieldKeydown);
   document.addEventListener("click", onComposerClick);
   document.addEventListener("click", onModalClick);
-  document.addEventListener("change", onConfirmSelect);
   document.addEventListener("click", onAlertDismiss);
   // `cancel` and `submit` are captured: `cancel` doesn't bubble, and the
   // submit guard must run before HTMX's listener on the form.

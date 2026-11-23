@@ -241,8 +241,9 @@ test "add a card, edit its details, and delete it" {
         const body = try t.body();
         try testing.expect(contains(body, ">Write &lt;spec&gt;</span>"));
         try testing.expect(contains(body, "1 card<"));
-        // The delete button now opens the transfer dialog.
-        try testing.expect(contains(body, "hx-get=\"/lists/1/delete\""));
+        // The only list can't move its cards, so it confirms in the browser.
+        try testing.expect(contains(body, "All cards in it will also be deleted."));
+        try testing.expect(!contains(body, "hx-get=\"/lists/1/delete\""));
     }
     {
         var t: http.TestRequest = undefined;
@@ -293,6 +294,8 @@ test "add a card, edit its details, and delete it" {
         const body = try t.body();
         try testing.expect(contains(body, "No cards yet"));
         try testing.expect(contains(body, "hx-delete=\"/lists/1\""));
+        try testing.expect(contains(body, "This action cannot be undone."));
+        try testing.expect(!contains(body, "All cards in it"));
     }
     {
         var t: http.TestRequest = undefined;

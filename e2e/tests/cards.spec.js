@@ -167,10 +167,11 @@ test("deleting a list with cards can move them to another list", async ({ page }
   await expect(dialog).toBeHidden();
   await expect(columns(page)).toHaveCount(2);
 
+  // The dialog is the confirmation; a browser prompt would be dismissed and
+  // fail the test.
   await columns(page).first().hover();
   await page.getByRole("button", { name: "Delete Doing list" }).click();
   await page.getByTestId("transfer-list-select").selectOption({ label: "Done" });
-  acceptConfirm(page, 'Are you sure you want to delete this list and move its cards to "Done"? This action cannot be undone.');
   await page.getByTestId("confirm-delete-list-btn").click();
 
   await expect(dialog).toBeHidden();
@@ -188,9 +189,32 @@ test("deleting a list with cards without a transfer deletes the cards", async ({
 
   await columns(page).first().hover();
   await page.getByRole("button", { name: "Delete Doing list" }).click();
-  acceptConfirm(page, "Are you sure you want to delete this list? All cards in it will also be deleted. This action cannot be undone.");
   await page.getByTestId("confirm-delete-list-btn").click();
   await expect(page.getByTestId("list-delete-modal")).toBeHidden();
   await expect(columns(page)).toHaveText([/Done/]);
+  expect(runSql("SELECT count(*) FROM cards").trim()).toBe("0");
+});
+
+test("a list with cards and nowhere to move them confirms in the browser instead", async ({ page }) => {
+  const { board, lists } = insertBoardWithLists(["Doing", "Empty"]);
+  insertCards(lists[0], ["Gone"]);
+  await open(page, `/boards/${board}`);
+  const cardsMessage = "Are you sure you want to delete this list? All cards in it will also be deleted. This action cannot be undone.";
+
+  // Deleting the other list leaves Doing alone, which switches its button.
+  await columns(page).nth(1).hover();
+  acceptConfirm(page, "Are you sure you want to delete this list? This action cannot be undone.");
+  await page.getByRole("button", { name: "Delete Empty list" }).click();
+  await expect(columns(page)).toHaveCount(1);
+
+  await columns(page).first().hover();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Delete Doing list" }).click();
+  await expect(columns(page)).toHaveCount(1);
+  await expect(page.getByTestId("list-delete-modal")).toHaveCount(0);
+
+  acceptConfirm(page, cardsMessage);
+  await page.getByRole("button", { name: "Delete Doing list" }).click();
+  await expect(page.getByRole("heading", { name: "Start your workflow" })).toBeVisible();
   expect(runSql("SELECT count(*) FROM cards").trim()).toBe("0");
 });

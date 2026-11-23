@@ -89,7 +89,7 @@ The keyboard behaviour is in `src/public/app.js`, a small dependency-free script
 
 Board pages follow the original app's board view: lists are columns in creation order, with titles edited in place and a delete button revealed on hover. A board with no lists shows a "Start your workflow" form; otherwise an add-list form follows the last list. Lists remain editable on archived boards, and deleting a board also deletes its lists and cards.
 
-Each list ends with "Add a card", which appends a card to the list. Clicking a card opens its details dialog, where the title and description are edited in place (the description is multiline and may be cleared) and the card can be deleted. Deleting an empty list asks for confirmation; deleting a list with cards opens a dialog that can move them, in order, to the end of another list on the board, or delete them with it.
+Each list ends with "Add a card", which appends a card to the list. Clicking a card opens its details dialog, where the title and description are edited in place (the description is multiline and may be cleared) and the card can be deleted. Deleting a list with cards opens a dialog that can move them, in order, to the end of another list on the board, or delete them with it; the dialog is the only confirmation. Other list deletions ask for confirmation in the browser, warning when the list's cards will be deleted too.
 
 Drag-and-drop and sending working-memory entries to a board are being built next, in that order.
 

@@ -49,6 +49,8 @@ const AddCardButton = CardTmpl("add-button");
 pub const Column = struct {
     list: List,
     cards: []const Card,
+    /// Whether the board has another list its cards could move to.
+    can_transfer: bool,
 };
 
 /// The contents of `#board-lists`: each column, then the add-list form, or
@@ -73,7 +75,7 @@ pub fn loadColumns(ctx: *Context, board_id: i64) ![]Column {
         while (start < all_cards.len and all_cards[start].list_id < item.id) start += 1;
         var end = start;
         while (end < all_cards.len and all_cards[end].list_id == item.id) end += 1;
-        column.* = .{ .list = item, .cards = all_cards[start..end] };
+        column.* = .{ .list = item, .cards = all_cards[start..end], .can_transfer = items.len > 1 };
         start = end;
     }
     return columns;
@@ -83,7 +85,11 @@ pub fn loadColumns(ctx: *Context, board_id: i64) ![]Column {
 pub fn loadColumn(ctx: *Context, list_id: i64) !?Column {
     const conn = try ctx.dbConn();
     const item = try lists.find(conn, ctx.arena, list_id) orelse return null;
-    return .{ .list = item, .cards = try cards.forList(conn, ctx.arena, list_id) };
+    return .{
+        .list = item,
+        .cards = try cards.forList(conn, ctx.arena, list_id),
+        .can_transfer = try lists.count(conn, item.board_id) > 1,
+    };
 }
 
 /// POST /boards/{id}/lists
@@ -133,8 +139,8 @@ pub fn rename(ctx: *Context, id_text: []const u8) !void {
     }, writeColumn, .{column});
 }
 
-/// GET /lists/{id}/delete: the dialog for deleting a list that has cards,
-/// offering to move them to another list on the board.
+/// GET /lists/{id}/delete: the dialog for deleting a list that has cards
+/// while the board has other lists to move them to.
 pub fn deleteDialog(ctx: *Context, id_text: []const u8) !void {
     const id = http.parseId(id_text) orelse return missing(ctx);
     const column = try loadColumn(ctx, id) orelse return missing(ctx);
@@ -142,9 +148,9 @@ pub fn deleteDialog(ctx: *Context, id_text: []const u8) !void {
     return ctx.html(.ok, writeDeleteDialog, .{ column, others });
 }
 
-/// DELETE /lists/{id}[?transfer_list_id=N]: removes the column (200, not 204,
-/// so HTMX swaps), first moving its cards to the end of the transfer list
-/// when one is chosen. Closes the delete dialog. Idempotent.
+/// DELETE /lists/{id}[?transfer_list_id=N]: removes the column, first moving
+/// its cards to the end of the transfer list when one is chosen. Closes the
+/// delete dialog. Idempotent.
 pub fn destroy(ctx: *Context, id_text: []const u8) !void {
     const id = http.parseId(id_text) orelse return ctx.html(.ok, writeCloseDialog, .{});
     const query = try ctx.queryForm();
@@ -162,14 +168,18 @@ pub fn destroy(ctx: *Context, id_text: []const u8) !void {
     };
     const board_id = deleted orelse return ctx.html(.ok, writeRemoved, .{ id, @as(?Column, null) });
 
-    if (try lists.count(conn, board_id) == 0) {
+    const remaining = try lists.forBoard(conn, ctx.arena, board_id);
+    if (remaining.len == 0) {
         return ctx.htmlWithHeaders(.ok, &.{
             .{ .name = "HX-Retarget", .value = "#board-lists" },
             .{ .name = "HX-Reswap", .value = "innerHTML" },
         }, writeEmptied, .{board_id});
     }
-    const target = if (transfer_to) |target_id| try loadColumn(ctx, target_id) else null;
-    return ctx.html(.ok, writeRemoved, .{ id, target });
+    // The transfer target gained cards. A sole remaining list can no longer
+    // transfer, so its delete button changes.
+    const update_id: ?i64 = transfer_to orelse if (remaining.len == 1) remaining[0].id else null;
+    const update = if (update_id) |list_id| try loadColumn(ctx, list_id) else null;
+    return ctx.html(.ok, writeRemoved, .{ id, update });
 }
 
 /// The chosen list is gone or on another board: show the dialog again with
@@ -215,6 +225,9 @@ fn cardCount(buffer: *[32]u8, count: usize) []const u8 {
     return std.fmt.bufPrint(buffer, "{d} {s}", .{ count, if (count == 1) "card" else "cards" }) catch unreachable;
 }
 
+const confirm_delete = "Are you sure you want to delete this list? This action cannot be undone.";
+const confirm_delete_with_cards = "Are you sure you want to delete this list? All cards in it will also be deleted. This action cannot be undone.";
+
 pub fn writeContents(writer: *Io.Writer, contents: Contents) Io.Writer.Error!void {
     var id: Id = .{};
     const form = .{ .board_id = id.of(contents.board_id), .title = contents.title, .message = contents.message };
@@ -228,8 +241,15 @@ pub fn writeColumn(writer: *Io.Writer, column: Column) Io.Writer.Error!void {
     const list_id = id.of(column.list.id);
     try ListStart.render(writer, .{ .id = list_id });
     const values = .{ .id = list_id, .title = column.list.title };
-    // Lists with cards open a dialog that can move them elsewhere first.
-    if (column.cards.len == 0) try DeleteButton.render(writer, values) else try DeleteDialogButton.render(writer, values);
+    // As in the original app, only lists whose cards could move elsewhere
+    // open the transfer dialog; the rest confirm in the browser.
+    if (column.cards.len == 0) {
+        try DeleteButton.render(writer, .{ .id = list_id, .title = column.list.title, .confirm = confirm_delete });
+    } else if (!column.can_transfer) {
+        try DeleteButton.render(writer, .{ .id = list_id, .title = column.list.title, .confirm = confirm_delete_with_cards });
+    } else {
+        try DeleteDialogButton.render(writer, values);
+    }
     try TitleStart.render(writer, .{});
     try writeTitle(writer, column.list);
     var count: [32]u8 = undefined;
@@ -257,11 +277,11 @@ pub fn writeCloseDialog(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll("<template hx type=\"partial\" hx-target=\"#modal-root\" hx-swap=\"innerHTML\"></template>\n");
 }
 
-/// Removes the deleted column, updates the transfer target, and closes the
-/// delete dialog.
-fn writeRemoved(writer: *Io.Writer, removed_id: i64, target: ?Column) Io.Writer.Error!void {
+/// Removes the deleted column, updates a column whose cards or delete button
+/// changed, and closes the delete dialog.
+fn writeRemoved(writer: *Io.Writer, removed_id: i64, update: ?Column) Io.Writer.Error!void {
     try writer.print("<template hx type=\"partial\" hx-target=\"#list-{d}\" hx-swap=\"delete\"></template>\n", .{removed_id});
-    if (target) |column| try writeColumnUpdate(writer, column);
+    if (update) |column| try writeColumnUpdate(writer, column);
     try writeCloseDialog(writer);
 }
 
@@ -375,15 +395,15 @@ test "create, edit, rename, and delete lists" {
         try testing.expect(contains(try t.body(), ">Doing</button>"));
     }
     {
-        // Another list remains, so the column is simply removed.
+        // Another list remains; being alone now, it is re-rendered.
         var t: http.TestRequest = undefined;
         try t.init("DELETE /lists/1 HTTP/1.1\r\nHost: test\r\n\r\n", pool);
         defer t.deinit();
         try destroy(&t.ctx, "1");
         try testing.expectEqual(@as(u16, 200), try t.status());
         const body = try t.body();
-        try testing.expect(!contains(body, "data-testid=\"list-column\""));
         try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"delete\""));
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
         try testing.expect(contains(body, "hx-target=\"#modal-root\""));
     }
     {
@@ -410,7 +430,7 @@ test "create, edit, rename, and delete lists" {
     }
 }
 
-test "lists with cards offer a transfer dialog, and deleting can move cards" {
+test "lists with cards offer a transfer dialog only when another list exists" {
     const pool = try boards.testPool();
     defer pool.deinit();
     {
@@ -422,7 +442,18 @@ test "lists with cards offer a transfer dialog, and deleting can move cards" {
         const board = try boards.create(conn, a, "Board");
         const source = (try lists.create(conn, a, board.id, "Source")).?;
         _ = (try lists.create(conn, a, board.id, "Target & Co")).?;
+        _ = (try lists.create(conn, a, board.id, "Spare")).?;
         _ = try cards.create(conn, a, source.id, "Moving card");
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init("GET /boards/1 HTTP/1.1\r\nHost: test\r\n\r\n", pool);
+        defer t.deinit();
+        const columns = try loadColumns(&t.ctx, 1);
+        var out: Io.Writer.Allocating = .init(t.ctx.arena);
+        try writeContents(&out.writer, .{ .board_id = 1, .columns = columns });
+        try testing.expect(contains(out.written(), "hx-get=\"/lists/1/delete\""));
+        try testing.expect(!contains(out.written(), "hx-get=\"/lists/2/delete\""));
     }
     {
         var t: http.TestRequest = undefined;
@@ -434,6 +465,8 @@ test "lists with cards offer a transfer dialog, and deleting can move cards" {
         try testing.expect(contains(body, "<option value=\"2\""));
         try testing.expect(contains(body, ">Target &amp; Co</option>"));
         try testing.expect(!contains(body, "<option value=\"1\""));
+        // The dialog is the confirmation.
+        try testing.expect(!contains(body, "hx-confirm"));
     }
     {
         // The source list itself is not a valid target.
@@ -445,14 +478,28 @@ test "lists with cards offer a transfer dialog, and deleting can move cards" {
         try testing.expect(contains(t.response(), "HX-Retarget: #modal-root\r\n"));
     }
     {
+        // Two lists remain, so the target can still transfer its cards.
         var t: http.TestRequest = undefined;
         try t.init("DELETE /lists/1?transfer_list_id=2 HTTP/1.1\r\nHost: test\r\n\r\n", pool);
         defer t.deinit();
         try destroy(&t.ctx, "1");
         try testing.expectEqual(@as(u16, 200), try t.status());
         const body = try t.body();
-        try testing.expect(contains(body, "hx-target=\"#list-2\""));
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
         try testing.expect(contains(body, ">Moving card</span>"));
         try testing.expect(contains(body, "1 card<"));
+        try testing.expect(contains(body, "hx-get=\"/lists/2/delete\""));
+    }
+    {
+        // Deleting the spare leaves the target alone on the board, so its
+        // delete button switches to a browser confirmation.
+        var t: http.TestRequest = undefined;
+        try t.init("DELETE /lists/3 HTTP/1.1\r\nHost: test\r\n\r\n", pool);
+        defer t.deinit();
+        try destroy(&t.ctx, "3");
+        const body = try t.body();
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
+        try testing.expect(!contains(body, "hx-get=\"/lists/2/delete\""));
+        try testing.expect(contains(body, "All cards in it will also be deleted."));
     }
 }
