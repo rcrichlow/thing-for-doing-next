@@ -59,7 +59,7 @@ pub fn create(ctx: *Context, list_id_text: []const u8) !void {
         else => |e| return e,
     } orelse return listMissing(ctx);
     const column = try list_handlers.loadColumn(ctx, list_id) orelse return listMissing(ctx);
-    const target = try std.fmt.allocPrint(ctx.arena, "#list-{d}", .{list_id});
+    const target = try ctx.arena.print("#list-{d}", .{list_id});
     return ctx.htmlWithHeaders(.created, &.{
         .{ .name = "HX-Retarget", .value = target },
         .{ .name = "HX-Reswap", .value = "outerHTML" },
@@ -260,7 +260,7 @@ fn get(comptime path: []const u8) []const u8 {
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
+    return std.mem.find(u8, haystack, needle) != null;
 }
 
 test "add a card, edit its details, and delete it" {
@@ -390,8 +390,8 @@ test "reordering re-renders the list and the lists its cards came from" {
         const body = try t.body();
         try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
         try testing.expect(!contains(body, "#list-2\""));
-        const second = std.mem.indexOf(u8, body, ">Second</span>").?;
-        try testing.expect(second < std.mem.indexOf(u8, body, ">First</span>").?);
+        const second = std.mem.find(u8, body, ">Second</span>").?;
+        try testing.expect(second < std.mem.find(u8, body, ">First</span>").?);
     }
     {
         var t: http.TestRequest = undefined;

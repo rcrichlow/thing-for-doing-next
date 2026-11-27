@@ -1,6 +1,7 @@
 .git
 .zig-cache
 zig-out
+zig-pkg
 README.md
 e2e/node_modules
 e2e/test-results

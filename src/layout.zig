@@ -70,10 +70,10 @@ test "marks only the active section as current" {
     try writeEnd(&writer, .contained);
     const html = writer.buffered();
 
-    try std.testing.expect(std.mem.indexOf(u8, html, "<title>T &amp; T</title>") != null);
+    try std.testing.expect(std.mem.find(u8, html, "<title>T &amp; T</title>") != null);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, html, "aria-current=\"page\""));
-    const current = std.mem.indexOf(u8, html, "aria-current=\"page\"").?;
-    const boards = std.mem.indexOf(u8, html, "href=\"/boards\"").?;
+    const current = std.mem.find(u8, html, "aria-current=\"page\"").?;
+    const boards = std.mem.find(u8, html, "href=\"/boards\"").?;
     try std.testing.expect(boards < current);
     try std.testing.expect(std.mem.endsWith(u8, html, "</html>\n"));
 }
@@ -84,8 +84,8 @@ test "full-width pages omit the centred container" {
     try writeStart(&writer, .{ .title = "T", .active = .boards, .width = .full });
     try writeEnd(&writer, .full);
     const html = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, html, "<main class=\"flex-1 py-6\">") == null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "<main class=\"flex min-h-0 flex-1 flex-col\">") != null);
+    try std.testing.expect(std.mem.find(u8, html, "<main class=\"flex-1 py-6\">") == null);
+    try std.testing.expect(std.mem.find(u8, html, "<main class=\"flex min-h-0 flex-1 flex-col\">") != null);
     try std.testing.expectEqual(std.mem.count(u8, html, "<div"), std.mem.count(u8, html, "</div>"));
 }
 
@@ -102,5 +102,5 @@ test "renders no current section when none is active" {
     var buffer: [8 * 1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
     try writeStart(&writer, .{ .title = "T", .active = null });
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "aria-current") == null);
+    try std.testing.expect(std.mem.find(u8, writer.buffered(), "aria-current") == null);
 }

@@ -56,9 +56,9 @@ const Config = struct {
 };
 
 pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(debug_allocator.deinit() == .ok);
-    const gpa = debug_allocator.allocator();
+    var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer std.debug.assert(safe_allocator.deinit() == 0);
+    const gpa = safe_allocator.allocator();
     var threaded = Io.Threaded.init(gpa, .{ .concurrent_limit = .limited(max_concurrent_tasks) });
     defer threaded.deinit();
     const io = threaded.io();
@@ -205,7 +205,7 @@ fn handleRequest(arena: Allocator, request: *Request, pool: ?*db.Pool) !void {
 /// request body is unknown.
 fn respondError(request: *Request, status: Status) Request.ExpectContinueError!void {
     var body_buffer: [64]u8 = undefined;
-    const body = std.fmt.bufPrint(&body_buffer, "{s}\n", .{status.phrase() orelse "error"}) catch unreachable;
+    const body = std.mem.print(&body_buffer, "{s}\n", .{status.phrase() orelse "error"}) catch unreachable;
     return request.respond(body, .{
         .status = status,
         .keep_alive = false,
@@ -444,8 +444,8 @@ fn testRequest(raw_request: []const u8, out_buffer: []u8) ![]const u8 {
 }
 
 fn expectHeader(response: []const u8, header: []const u8) !void {
-    const head_end = (std.mem.indexOf(u8, response, "\r\n\r\n") orelse return error.TestUnexpectedResult) + 2;
-    if (std.mem.indexOf(u8, response[0..head_end], header) == null) {
+    const head_end = (std.mem.find(u8, response, "\r\n\r\n") orelse return error.TestUnexpectedResult) + 2;
+    if (std.mem.find(u8, response[0..head_end], header) == null) {
         std.debug.print("missing header '{s}' in:\n{s}\n", .{ header, response[0..head_end] });
         return error.TestUnexpectedResult;
     }

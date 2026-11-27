@@ -164,7 +164,7 @@ test "a failing migration is rolled back and stops the run" {
     try std.testing.expectError(error.PG, run(conn, &migrations, &diagnostics));
     try std.testing.expectEqualStrings("002_broken", diagnostics.failed_version.?);
     try std.testing.expectEqualStrings("42P01", diagnostics.code());
-    try std.testing.expect(std.mem.indexOf(u8, diagnostics.message(), "missing_table") != null);
+    try std.testing.expect(std.mem.find(u8, diagnostics.message(), "missing_table") != null);
 
     var tables = try conn.query(
         "SELECT table_name::text FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1",

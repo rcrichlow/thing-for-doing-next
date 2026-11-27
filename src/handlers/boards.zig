@@ -81,7 +81,7 @@ pub fn archived(ctx: *Context) !void {
 pub fn show(ctx: *Context, id_text: []const u8) !void {
     const board = try findBoard(ctx, id_text) orelse
         return ctx.page(.{ .active = .boards, .status = .not_found }, NotFound.render, .{.{}});
-    const page_title = try std.fmt.allocPrint(ctx.arena, "{s} · {s}", .{ board.title, http.app_title });
+    const page_title = try ctx.arena.print("{s} · {s}", .{ board.title, http.app_title });
     const columns = try list_handlers.loadColumns(ctx, board.id);
     return ctx.page(.{ .active = .boards, .title = page_title }, writeShow, .{ board, columns });
 }
@@ -177,7 +177,7 @@ fn missing(ctx: *Context) !void {
 const Id = struct {
     buffer: [20]u8 = undefined,
     fn of(id: *Id, value: i64) []const u8 {
-        return std.fmt.bufPrint(&id.buffer, "{d}", .{value}) catch unreachable;
+        return std.mem.print(&id.buffer, "{d}", .{value}) catch unreachable;
     }
 };
 
@@ -288,7 +288,7 @@ fn get(comptime path: []const u8) []const u8 {
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
+    return std.mem.find(u8, haystack, needle) != null;
 }
 
 fn createBoard(pool: anytype, name: []const u8) !Board {

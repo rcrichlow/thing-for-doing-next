@@ -22,6 +22,6 @@ start_server() {
 trap 'stop_server; exit 0' INT TERM
 
 start_server
-while inotifywait --quiet --recursive --exclude 'src/public/app\.css$' --event close_write,create,delete,move src build.zig migrations; do
+while inotifywait --quiet --recursive --exclude 'src/public/app\.css$' --event close_write,create,delete,move src build.zig build.zig.zon migrations; do
     start_server
 done

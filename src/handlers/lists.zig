@@ -141,7 +141,7 @@ pub fn rename(ctx: *Context, id_text: []const u8) !void {
         else => |e| return e,
     } orelse return missing(ctx);
     const column = try loadColumn(ctx, id) orelse return missing(ctx);
-    const target = try std.fmt.allocPrint(ctx.arena, "#list-{d}", .{id});
+    const target = try ctx.arena.print("#list-{d}", .{id});
     return ctx.htmlWithHeaders(.ok, &.{
         .{ .name = "HX-Retarget", .value = target },
         .{ .name = "HX-Reswap", .value = "outerHTML" },
@@ -225,13 +225,13 @@ fn missing(ctx: *Context) !void {
 pub const Id = struct {
     buffer: [20]u8 = undefined,
     pub fn of(id: *Id, value: i64) []const u8 {
-        return std.fmt.bufPrint(&id.buffer, "{d}", .{value}) catch unreachable;
+        return std.mem.print(&id.buffer, "{d}", .{value}) catch unreachable;
     }
 };
 
 /// "1 card", "3 cards".
 fn cardCount(buffer: *[32]u8, count: usize) []const u8 {
-    return std.fmt.bufPrint(buffer, "{d} {s}", .{ count, if (count == 1) "card" else "cards" }) catch unreachable;
+    return std.mem.print(buffer, "{d} {s}", .{ count, if (count == 1) "card" else "cards" }) catch unreachable;
 }
 
 const confirm_delete = "Are you sure you want to delete this list? This action cannot be undone.";
@@ -341,7 +341,7 @@ fn formRequest(comptime method: []const u8, comptime path: []const u8, comptime 
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
+    return std.mem.find(u8, haystack, needle) != null;
 }
 
 test "create, edit, rename, and delete lists" {
@@ -384,8 +384,8 @@ test "create, edit, rename, and delete lists" {
         defer t.deinit();
         try create(&t.ctx, "1");
         const body = try t.body();
-        const first = std.mem.indexOf(u8, body, "To Do &amp; More").?;
-        try testing.expect(first < std.mem.indexOf(u8, body, ">Done</button>").?);
+        const first = std.mem.find(u8, body, "To Do &amp; More").?;
+        try testing.expect(first < std.mem.find(u8, body, ">Done</button>").?);
     }
     {
         var t: http.TestRequest = undefined;

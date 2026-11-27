@@ -54,7 +54,7 @@ pub const Context = struct {
     /// invalidates them.
     pub fn init(arena: Allocator, request: *Request, db_pool: ?*db.Pool) Allocator.Error!Context {
         const target = request.head.target;
-        const query_start = std.mem.indexOfScalar(u8, target, '?');
+        const query_start = std.mem.findScalar(u8, target, '?');
         return .{
             .arena = arena,
             .request = request,
@@ -87,7 +87,7 @@ pub const Context = struct {
     /// Reads and decodes an `application/x-www-form-urlencoded` request body.
     pub fn readForm(ctx: *Context) !form.Form {
         const content_type = ctx.content_type orelse return error.UnsupportedMediaType;
-        const media_type = std.mem.trim(u8, content_type[0 .. std.mem.indexOfScalar(u8, content_type, ';') orelse content_type.len], " \t");
+        const media_type = std.mem.trim(u8, content_type[0 .. std.mem.findScalar(u8, content_type, ';') orelse content_type.len], " \t");
         if (!std.ascii.eqlIgnoreCase(media_type, "application/x-www-form-urlencoded")) {
             return error.UnsupportedMediaType;
         }
@@ -188,20 +188,20 @@ fn renderPage(writer: *Io.Writer, options: PageOptions, comptime render: anytype
 /// Returns the segment captured by the single `{name}` placeholder in
 /// `pattern` if `path` matches, or null. Captures never contain `/`.
 pub fn pathParam(comptime pattern: []const u8, path: []const u8) ?[]const u8 {
-    const open = comptime std.mem.indexOfScalar(u8, pattern, '{') orelse
+    const open = comptime std.mem.findScalar(u8, pattern, '{') orelse
         @compileError("pathParam pattern needs a {name} placeholder; compare static paths directly");
-    const close = comptime std.mem.indexOfScalarPos(u8, pattern, open, '}') orelse
+    const close = comptime std.mem.findScalarPos(u8, pattern, open, '}') orelse
         @compileError("unclosed placeholder in route pattern");
     const prefix = pattern[0..open];
     const suffix = pattern[close + 1 ..];
-    comptime if (std.mem.indexOfScalar(u8, suffix, '{') != null) {
+    comptime if (std.mem.findScalar(u8, suffix, '{') != null) {
         @compileError("route patterns support a single placeholder");
     };
 
     if (path.len <= prefix.len + suffix.len) return null;
     if (!std.mem.startsWith(u8, path, prefix) or !std.mem.endsWith(u8, path, suffix)) return null;
     const segment = path[prefix.len .. path.len - suffix.len];
-    if (std.mem.indexOfScalar(u8, segment, '/') != null) return null;
+    if (std.mem.findScalar(u8, segment, '/') != null) return null;
     return segment;
 }
 
@@ -252,7 +252,7 @@ pub const TestRequest = struct {
 
     pub fn body(self: *TestRequest) ![]const u8 {
         const raw = self.response();
-        const head_end = std.mem.indexOf(u8, raw, "\r\n\r\n") orelse return error.TestUnexpectedResult;
+        const head_end = std.mem.find(u8, raw, "\r\n\r\n") orelse return error.TestUnexpectedResult;
         return raw[head_end + 4 ..];
     }
 };
@@ -307,7 +307,7 @@ test "rejects oversized declared bodies" {
 }
 
 test "rejects oversized chunked bodies" {
-    const chunk = "a" ** 0x8000;
+    const chunk: [0x8000]u8 = @splat('a');
     const raw = "POST /entries HTTP/1.1\r\nHost: test\r\n" ++
         "Content-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n" ++
         "8000\r\n" ++ chunk ++ "\r\n8000\r\n" ++ chunk ++ "\r\n1\r\na\r\n0\r\n\r\n";

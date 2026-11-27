@@ -22,7 +22,7 @@ pub fn load(comptime source: []const u8) Queries(source) {
 pub fn Queries(comptime source: []const u8) type {
     const statements = parse(source);
     var names: [statements.len][]const u8 = undefined;
-    var attrs: [statements.len]std.builtin.Type.StructField.Attributes = undefined;
+    var attrs: [statements.len]std.lang.Type.Struct.FieldAttributes = undefined;
     for (statements, 0..) |statement, i| {
         names[i] = statement.name;
         attrs[i] = .{ .@"comptime" = true, .default_value_ptr = @ptrCast(&statements[i].sql) };
@@ -39,7 +39,7 @@ fn parse(comptime source: []const u8) []const Statement {
     var body_start: usize = 0;
     var pos: usize = 0;
     while (pos < source.len) {
-        const end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
+        const end = std.mem.findScalarPos(u8, source, pos, '\n') orelse source.len;
         const line = std.mem.trim(u8, source[pos..end], " \t\r");
         if (std.mem.startsWith(u8, line, marker)) {
             if (name) |previous| {
@@ -64,7 +64,7 @@ fn parse(comptime source: []const u8) []const Statement {
 fn finish(comptime name: []const u8, comptime body: []const u8) Statement {
     var text = std.mem.trim(u8, body, " \t\r\n");
     while (text.len > 0) {
-        const line_start = if (std.mem.lastIndexOfScalar(u8, text, '\n')) |newline| newline + 1 else 0;
+        const line_start = if (std.mem.findScalarLast(u8, text, '\n')) |newline| newline + 1 else 0;
         if (!std.mem.startsWith(u8, std.mem.trimStart(u8, text[line_start..], " \t"), "--")) break;
         text = std.mem.trimEnd(u8, text[0..line_start], " \t\r\n");
     }
@@ -106,5 +106,5 @@ test "loads named statements" {
     try testing.expectEqualStrings("-- Comments under the marker stay with the statement.\nSELECT count(*) FROM boards", q.count);
     try testing.expectEqualStrings("DELETE FROM boards", q.delete);
     try testing.expectEqual(0, q.delete[q.delete.len]);
-    try testing.expectEqual(3, @typeInfo(@TypeOf(q)).@"struct".fields.len);
+    try testing.expectEqual(3, @typeInfo(@TypeOf(q)).@"struct".field_names.len);
 }

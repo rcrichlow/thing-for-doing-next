@@ -122,7 +122,7 @@ fn writeEdit(writer: *Io.Writer, entry: Entry) Io.Writer.Error!void {
 fn writeNothing(_: *Io.Writer) Io.Writer.Error!void {}
 
 fn formatId(buffer: *[20]u8, id: i64) []const u8 {
-    return std.fmt.bufPrint(buffer, "{d}", .{id}) catch unreachable;
+    return std.mem.print(buffer, "{d}", .{id}) catch unreachable;
 }
 
 const testing = std.testing;
@@ -132,16 +132,16 @@ test "entries render escaped with preserved newlines" {
     defer out.deinit();
     try writeEntry(&out.writer, .{ .id = 7, .content = "<b>hi</b>\nthere", .updated_at = "2026-01-01T00:00:00Z" });
     const html = out.written();
-    try testing.expect(std.mem.indexOf(u8, html, "id=\"entry-7\"") != null);
-    try testing.expect(std.mem.indexOf(u8, html, "hx-get=\"/entries/7/edit\"") != null);
-    try testing.expect(std.mem.indexOf(u8, html, ">&lt;b&gt;hi&lt;/b&gt;\nthere</button>") != null);
+    try testing.expect(std.mem.find(u8, html, "id=\"entry-7\"") != null);
+    try testing.expect(std.mem.find(u8, html, "hx-get=\"/entries/7/edit\"") != null);
+    try testing.expect(std.mem.find(u8, html, ">&lt;b&gt;hi&lt;/b&gt;\nthere</button>") != null);
 }
 
 test "edit form puts content after the textarea's ignored leading newline" {
     var out: Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try writeEdit(&out.writer, .{ .id = 3, .content = "a & b", .updated_at = "" });
-    try testing.expect(std.mem.indexOf(u8, out.written(), ">\na &amp; b</textarea>") != null);
+    try testing.expect(std.mem.find(u8, out.written(), ">\na &amp; b</textarea>") != null);
 }
 
 fn formRequest(comptime method: []const u8, comptime path: []const u8, comptime body: []const u8) []const u8 {
@@ -162,7 +162,7 @@ test "create responds 201 with an out-of-band entry and rejects blank content" {
         try testing.expectEqual(@as(u16, 201), try t.status());
         const body = try t.body();
         try testing.expect(std.mem.startsWith(u8, body, "<div hx-swap-oob=\"afterbegin:#entries\">"));
-        try testing.expect(std.mem.indexOf(u8, body, ">first\nsecond</button>") != null);
+        try testing.expect(std.mem.find(u8, body, ">first\nsecond</button>") != null);
     }
     {
         var t: http.TestRequest = undefined;
@@ -170,7 +170,7 @@ test "create responds 201 with an out-of-band entry and rejects blank content" {
         defer t.deinit();
         try create(&t.ctx);
         try testing.expectEqual(@as(u16, 422), try t.status());
-        try testing.expect(std.mem.indexOf(u8, try t.body(), "Entry can&#39;t be blank.") != null);
+        try testing.expect(std.mem.find(u8, try t.body(), "Entry can&#39;t be blank.") != null);
     }
     {
         var t: http.TestRequest = undefined;
@@ -201,7 +201,7 @@ test "edit, update, and show round-trip an entry" {
         defer t.deinit();
         try edit(&t.ctx, id_text);
         try testing.expectEqual(@as(u16, 200), try t.status());
-        try testing.expect(std.mem.indexOf(u8, try t.body(), ">\noriginal</textarea>") != null);
+        try testing.expect(std.mem.find(u8, try t.body(), ">\noriginal</textarea>") != null);
     }
     {
         var t: http.TestRequest = undefined;
@@ -209,7 +209,7 @@ test "edit, update, and show round-trip an entry" {
         defer t.deinit();
         try update(&t.ctx, id_text);
         try testing.expectEqual(@as(u16, 200), try t.status());
-        try testing.expect(std.mem.indexOf(u8, try t.body(), ">revised</button>") != null);
+        try testing.expect(std.mem.find(u8, try t.body(), ">revised</button>") != null);
     }
     {
         // Blank content leaves the entry unchanged.
@@ -218,7 +218,7 @@ test "edit, update, and show round-trip an entry" {
         defer t.deinit();
         try update(&t.ctx, id_text);
         try testing.expectEqual(@as(u16, 200), try t.status());
-        try testing.expect(std.mem.indexOf(u8, try t.body(), ">revised</button>") != null);
+        try testing.expect(std.mem.find(u8, try t.body(), ">revised</button>") != null);
     }
     {
         var t: http.TestRequest = undefined;
@@ -226,7 +226,7 @@ test "edit, update, and show round-trip an entry" {
         defer t.deinit();
         try show(&t.ctx, "999999");
         try testing.expectEqual(@as(u16, 404), try t.status());
-        try testing.expect(std.mem.indexOf(u8, try t.body(), "no longer exists") != null);
+        try testing.expect(std.mem.find(u8, try t.body(), "no longer exists") != null);
     }
 }
 

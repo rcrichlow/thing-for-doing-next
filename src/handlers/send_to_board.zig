@@ -174,7 +174,7 @@ fn formRequest(comptime path: []const u8, comptime body: []const u8) []const u8 
         std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{body.len}) ++ body;
 }
 fn contains(text: []const u8, part: []const u8) bool {
-    return std.mem.indexOf(u8, text, part) != null;
+    return std.mem.find(u8, text, part) != null;
 }
 
 test "send picker creates destinations and copies an entry only to a valid active board" {

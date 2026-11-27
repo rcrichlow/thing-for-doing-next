@@ -1,7 +1,7 @@
 //! The only place libpq's C API is imported. Everything else uses `db.zig`,
 //! so replacing the client means replacing `db.zig`'s internals and this file.
 
-pub const c = @cImport(@cInclude("libpq-fe.h"));
+pub const c = @import("libpq");
 
 /// PostgreSQL type OIDs checked by `Row.get` (see `pg_type.dat`).
 pub const oid = struct {

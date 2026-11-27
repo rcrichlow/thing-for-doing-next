@@ -1,6 +1,6 @@
 FROM debian:bookworm-slim AS builder
 
-ARG ZIG_VERSION=0.16.0
+ARG ZIG_VERSION=0.17.1
 ARG TAILWIND_VERSION=4.1.18
 ARG TARGETARCH
 
@@ -16,7 +16,7 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/tailwindcss
 
 WORKDIR /app
-COPY build.zig ./
+COPY build.zig build.zig.zon ./
 COPY migrations ./migrations
 COPY src ./src
 RUN tailwindcss --input src/public/input.css --output src/public/app.css --minify \

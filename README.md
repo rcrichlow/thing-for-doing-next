@@ -60,7 +60,7 @@ if it's actionable or not.
   - creating a new list inline
   - previewing multiline entry text with preserved line breaks
 
-The entry remains unchanged. Its content becomes the card title, with line breaks flattened to spaces like other card titles.
+The entry remains unchanged. Its content becomes the card title, with line breaks flattened to spaces like other card titles. Boards and lists created in the dialog are saved immediately, even if the dialog is cancelled before creating a card.
 
 ### Board behavior
 
@@ -75,14 +75,14 @@ The entry remains unchanged. Its content becomes the card title, with line break
 - Active boards are shown on `/boards`, while archived boards are hidden from that list and moved to `/boards/archived`
 - Archived boards keep their normal board detail page and show an archived indicator when viewed directly
 - Archived boards can be unarchived from the archived boards page or from the archived board view
-- Archived boards currently behave like regular boards aside from list placement and archived labeling
+- Archived boards remain editable, but cannot be selected as send-to-board destinations until unarchived
 - Cards can be moved with drag-and-drop or, when focused, with `Alt+Up/Down` and `Alt+Left/Right`
 
 ## Stack
 
 ### Backend
 
-- Zig 0.16.0 HTTP server and libpq PostgreSQL client
+- Zig 0.17.1 HTTP server and libpq PostgreSQL client
 - PostgreSQL 17
 - Docker Compose
 
@@ -101,7 +101,7 @@ Docker keeps the database, compiler/runtime assumptions, and production-style im
 | Model | Description | Key Fields |
 |---|---|---|
 | Board | Container for lists | `title`, `archived_at` |
-| List | Column within a board | `title`, `position`, `board_id` |
+| List | Column within a board, ordered by creation | `title`, `board_id` |
 | Card | Task item within a list | `title`, `description`, `position`, `list_id` |
 | WorkingMemoryEntry | Quick capture item | `content` |
 
@@ -123,7 +123,7 @@ mise run dev
 - Health check runs on `http://localhost:3000/up`
 - PostgreSQL is available on `localhost:5433`
 - Startup runs migrations automatically
-- The development container mounts the source tree; changes to `src/`, `migrations/`, or `build.zig` rebuild and restart only the app process
+- The development container mounts the source tree; changes to `src/`, `migrations/`, `build.zig`, or `build.zig.zon` rebuild and restart only the app process
 - The development watcher rebuilds Tailwind CSS before recompiling the app
 
 Build and run the production-style image with `mise run prod`. It shares the database and port 3000 with the development server, so run only one at a time. Stop services with `mise run down`; `docker compose down --volumes` also deletes local database data.
@@ -142,17 +142,18 @@ Browser tests against an isolated server on port 3001 and a separate `thing_for_
 mise run e2e
 ```
 
-Arguments are passed to Playwright, e.g. `mise run e2e -- -g "boards"`. Tests use the system Chromium at `/usr/bin/chromium` (override with `CHROMIUM_PATH`) and need Node.js; npm dependencies are installed into `e2e/node_modules` on first run.
+Arguments are passed to Playwright, e.g. `mise run e2e -- -g "boards"`. Tests need Node.js; npm dependencies are installed into `e2e/node_modules` on first run. They use Chromium at `/usr/bin/chromium` (override with `CHROMIUM_PATH`) if it exists, otherwise Playwright's installed Chromium (`npx playwright install chromium` from `e2e/`). The tests reset their database before each test.
 
-With Zig 0.16.0 and libpq installed locally:
+For local builds, install Zig 0.17.1, libpq development files, pkg-config, and the Tailwind CSS 4.1.18 CLI. Zig fetches the pinned `translate-c` dependency on the first build. Generate the ignored stylesheet before building (and regenerate it after changing templates or styles):
 
 ```bash
+tailwindcss --input src/public/input.css --output src/public/app.css
 zig build test
 zig build
 DATABASE_URL=postgresql://thing_for_doing:thing_for_doing@localhost:5433/thing_for_doing_next zig build run
 ```
 
-Local `zig build test` skips database integration tests unless `TEST_DATABASE_URL` points at a database whose name ends in `_test`. The container image pins Zig 0.16.0; keep local Zig aligned before relying on local builds.
+Local `zig build test` skips database integration tests when `TEST_DATABASE_URL` is unset. When it is set, tests require a database whose name ends in `_test` and **reset its `public` schema**, deleting its contents. The container image pins Zig 0.17.1; keep local Zig aligned before relying on local builds.
 
 ## Implementation Notes
 
@@ -168,10 +169,11 @@ Local `zig build test` skips database integration tests unless `TEST_DATABASE_UR
 - The app requires `DATABASE_URL` and exits at startup if the database is unreachable or a migration fails; Compose sets it for both app services
 - Migrations in `migrations/*.sql` are embedded, applied in filename order at startup, and recorded in `schema_migrations`; add a new file rather than editing an applied migration
 - The libpq wrapper in `src/db.zig` is shaped like [pg.zig](https://github.com/karlseguin/pg.zig) so it can be replaced without changing callers
+- The build uses the pinned Zig `translate-c` package to generate libpq bindings from `src/db/libpq.h`
 - HTMX is vendored in `src/public/htmx-4.0.2.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.2/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`; update the versioned filename, embedded asset route, and script URL together when upgrading
 - Generated CSS is served at `/assets/styles.css` with revalidation, not `/assets/app.css`, which an early build cached immutably
 - At most 16 connections are served concurrently; further connections receive `503 Service Unavailable`. Idle keep-alive connections are not timed out yet, so revisit this before exposing the app beyond local use
-- Request bodies are limited to 64 KiB and must be `application/x-www-form-urlencoded`
+- Form bodies read by handlers are limited to 64 KiB and must be `application/x-www-form-urlencoded`
 
 ## Future Enhancement Ideas
 
@@ -184,7 +186,7 @@ These are ideas, not committed roadmap items.
 - Global search across boards and cards
 - Labels or tags
 - Filtering tools
-- Keyboard shortcuts
+- Additional keyboard shortcuts
 - Command palette for fast navigation and creation
 - Better card detail editing and visibility
 - Due dates and reminders

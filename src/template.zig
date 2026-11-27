@@ -16,15 +16,15 @@ pub fn Template(comptime source: []const u8) type {
             }
 
             comptime var cursor = 0;
-            inline while (comptime std.mem.indexOfPos(u8, source, cursor, "{{")) |open| {
+            inline while (comptime std.mem.findPos(u8, source, cursor, "{{")) |open| {
                 try writer.writeAll(source[cursor..open]);
 
                 const name_start = open + 2;
-                const close = comptime std.mem.indexOfPos(u8, source, name_start, "}}") orelse
+                const close = comptime std.mem.findPos(u8, source, name_start, "}}") orelse
                     @compileError("unclosed template placeholder");
                 const name = source[name_start..close];
                 if (comptime name.len == 0) @compileError("template placeholder cannot be empty");
-                if (comptime std.mem.indexOfScalar(u8, name, '{') != null) {
+                if (comptime std.mem.findScalar(u8, name, '{') != null) {
                     @compileError("nested template placeholders are not supported");
                 }
 

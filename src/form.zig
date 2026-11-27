@@ -33,7 +33,7 @@ pub fn parse(arena: Allocator, encoded: []const u8) ParseError!Form {
     var pairs = std.mem.splitScalar(u8, encoded, '&');
     while (pairs.next()) |pair| {
         if (pair.len == 0) continue;
-        const separator = std.mem.indexOfScalar(u8, pair, '=');
+        const separator = std.mem.findScalar(u8, pair, '=');
         const raw_name = if (separator) |i| pair[0..i] else pair;
         const raw_value = if (separator) |i| pair[i + 1 ..] else "";
         try fields.append(arena, .{
@@ -45,7 +45,7 @@ pub fn parse(arena: Allocator, encoded: []const u8) ParseError!Form {
 }
 
 fn decode(arena: Allocator, raw: []const u8) ParseError![]const u8 {
-    const decoded = if (std.mem.indexOfAny(u8, raw, "%+") == null) raw else blk: {
+    const decoded = if (std.mem.findAny(u8, raw, "%+") == null) raw else blk: {
         const out = try arena.alloc(u8, raw.len);
         var read: usize = 0;
         var written: usize = 0;

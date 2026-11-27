@@ -233,13 +233,13 @@ pub const Conn = struct {
         conn.clearError();
         _ = conn.scratch.reset(.{ .retain_with_limit = 16 * 1024 });
 
-        const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+        const fields = @typeInfo(@TypeOf(args)).@"struct".field_names;
         const result = if (fields.len == 0)
             c.PQexec(conn.pg, sql.ptr)
         else blk: {
             var values: [fields.len][*c]const u8 = undefined;
             inline for (fields, 0..) |field, i| {
-                values[i] = try encodeParam(conn.scratch.allocator(), @field(args, field.name));
+                values[i] = try encodeParam(conn.scratch.allocator(), @field(args, field));
             }
             break :blk c.PQexecParams(conn.pg, sql.ptr, fields.len, null, &values, null, null, 0);
         };
@@ -416,13 +416,13 @@ fn encodeParam(arena: Allocator, value: anytype) Error![*c]const u8 {
         .optional => return if (value) |inner| encodeParam(arena, inner) else null,
         .bool => return if (value) "t" else "f",
         .int, .comptime_int, .float, .comptime_float => {
-            return (try std.fmt.allocPrintSentinel(arena, "{d}", .{value}, 0)).ptr;
+            return (try arena.printSentinel("{d}", .{value}, 0)).ptr;
         },
         .@"enum" => return @tagName(value),
         .pointer => {
             const bytes: []const u8 = value;
-            if (std.mem.indexOfScalar(u8, bytes, 0) != null) return error.InvalidParameter;
-            return (try arena.dupeZ(u8, bytes)).ptr;
+            if (std.mem.findScalar(u8, bytes, 0) != null) return error.InvalidParameter;
+            return (try arena.dupeSentinel(u8, bytes, 0)).ptr;
         },
         else => @compileError("unsupported parameter type: " ++ @typeName(T)),
     }
