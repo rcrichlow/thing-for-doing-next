@@ -1,8 +1,7 @@
 # Thing for Doing Next
 
-Thing for Doing Next is an experimental rewrite of the personal productivity app in the adjacent
-`thing-for-doing` repository. It uses Zig, server-rendered HTML, HTMX, and PostgreSQL instead of the
-original Rails JSON API and React frontend. It is built around two connected workflows:
+Thing for Doing Next is a personal productivity app built with Zig, server-rendered HTML, HTMX,
+and PostgreSQL. It is built around two connected workflows:
 
 - **Working Memory** for fast capture
 - **Boards** for organizing items into lists and cards
@@ -95,7 +94,7 @@ The entry remains unchanged. Its content becomes the card title, with line break
 - Dependency-free JavaScript for page behavior and drag-and-drop
 - Playwright
 
-Docker keeps the database, compiler/runtime assumptions, and production-style image build reproducible while the stack is being evaluated. The multi-stage application image does not include the Zig compiler at runtime.
+Docker keeps the database, compiler/runtime assumptions, and production-style image build reproducible. The multi-stage application image does not include the Zig compiler at runtime.
 
 ## Data Model
 
