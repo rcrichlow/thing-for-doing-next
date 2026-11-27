@@ -710,9 +710,13 @@
       if (attribute.name !== "class") overlay.removeAttribute(attribute.name);
     }
     overlay.setAttribute("aria-hidden", "true");
+    overlay.dataset.dragOverlay = "";
     overlay.classList.remove("shadow-sm", "border-zinc-700", "transition-all");
     overlay.classList.add("shadow-xl", "border-violet-500", "rotate-1");
+    // The card's transition duration would otherwise ease every move, so
+    // the copy would trail the pointer.
     Object.assign(overlay.style, {
+      transition: "none",
       position: "fixed",
       left: `${rect.left}px`,
       top: `${rect.top}px`,

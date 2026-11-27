@@ -199,6 +199,29 @@ test("Escape cancels a drag, and a click without dragging still opens the card",
   expect(requests).toBe(0);
 });
 
+test("the dragged copy follows the pointer without lagging", async ({ page }) => {
+  const { board, lists } = insertBoardWithLists(["Doing", "Done"]);
+  insertCards(lists[0], ["Follow"]);
+  await open(page, `/boards/${board}`);
+  const card = columns(page).first().getByTestId("card-item");
+  const start = await box(card);
+  await pickUp(page, card);
+  const overlay = page.locator("[data-drag-overlay]");
+  await expect(overlay).toHaveCount(1);
+
+  for (const [dx, dy] of [[150, 20], [300, 60], [40, 100]]) {
+    const pointer = { x: start.x + start.width / 2 + dx, y: start.y + start.height / 2 + dy };
+    await page.mouse.move(pointer.x, pointer.y);
+    // The card was picked up at its centre. Any easing would leave the copy
+    // behind the pointer when read straight after the move.
+    const copy = await box(overlay);
+    expect(Math.abs(copy.x + copy.width / 2 - pointer.x)).toBeLessThan(2);
+    expect(Math.abs(copy.y + copy.height / 2 - pointer.y)).toBeLessThan(2);
+  }
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+});
+
 test("Alt+Arrow keys move the focused card between and within lists", async ({ page }) => {
   const { board, lists } = insertBoardWithLists(["Doing", "Done"]);
   insertCards(lists[0], ["First", "Second"]);
