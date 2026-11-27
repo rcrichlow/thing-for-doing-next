@@ -328,6 +328,11 @@ fn route(ctx: *Context) !void {
         else => ctx.methodNotAllowed("PUT"),
     };
 
+    if (pathParam("/boards/{id}/list-order", path)) |id| return switch (ctx.method) {
+        .PUT => lists.reorder(ctx, id),
+        else => ctx.methodNotAllowed("PUT"),
+    };
+
     if (pathParam("/lists/{id}/edit", path)) |id| return switch (ctx.method) {
         .GET, .HEAD => lists.edit(ctx, id),
         else => ctx.methodNotAllowed(read_methods),

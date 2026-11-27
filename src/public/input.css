@@ -3,12 +3,30 @@
 /* While a card is dragged (see app.js), nothing else shows its own cursor
    or selects text. */
 html[data-dragging-card],
-html[data-dragging-card] * {
+html[data-dragging-card] *,
+html[data-dragging-list],
+html[data-dragging-list] * {
   cursor: grabbing !important;
   user-select: none;
 }
 
 /* Long-pressing a card starts a drag on touch screens, not a callout. */
-[data-card] {
+[data-card], [data-list-handle] {
   -webkit-touch-callout: none;
 }
+
+/* Mark the exact side where a dragged list will land. */
+[data-list-column][data-list-drop-side] { position: relative; }
+[data-list-column][data-list-drop-side]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 2px;
+  background: #a78bfa;
+  z-index: 20;
+  pointer-events: none;
+}
+[data-list-drop-side="before"]::before { left: -14px; }
+[data-list-drop-side="after"]::before { right: -14px; }

@@ -40,6 +40,7 @@ const Title = Tmpl("title");
 const TitleEdit = Tmpl("title-edit");
 const NotFound = Tmpl("not-found");
 const CardMoveForm = Tmpl("card-move-form");
+const ListMoveForm = Tmpl("list-move-form");
 const Missing = Tmpl("missing");
 
 /// GET /boards
@@ -231,13 +232,14 @@ fn writeArchived(writer: *Io.Writer, list: []const Board) Io.Writer.Error!void {
 fn writeShow(writer: *Io.Writer, board: Board, columns: []const list_handlers.Column) Io.Writer.Error!void {
     try ShowStart.render(writer, .{});
     try writeHeader(writer, board);
-    try writer.writeAll("<div class=\"flex-1 overflow-x-auto overflow-y-hidden p-6\" data-board-scroll>\n<div id=\"board-lists\" class=\"flex h-full gap-6\">\n");
+    try writer.writeAll("<div class=\"min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-6\" data-board-scroll>\n<div id=\"board-lists\" class=\"flex h-full items-start gap-6\">\n");
     try list_handlers.writeContents(writer, .{ .board_id = board.id, .columns = columns });
     // Card details and list deletion dialogs are loaded into `#modal-root`.
     try writer.writeAll("</div>\n</div>\n<div id=\"modal-root\"></div>\n");
     // app.js submits this form after moving a card in the page.
     var id: Id = .{};
     try CardMoveForm.render(writer, .{ .board_id = id.of(board.id) });
+    try ListMoveForm.render(writer, .{ .board_id = id.of(board.id) });
     try writer.writeAll("</div>\n");
 }
 

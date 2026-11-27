@@ -7,4 +7,9 @@
     hx-swap="outerHTML"
     hx-sync="#card-move:queue all"
     class="group/list w-80 flex-shrink-0 bg-zinc-900 rounded-lg shadow-sm border border-zinc-800 flex flex-col max-h-full">
-    <div class="relative border-b border-zinc-800 bg-zinc-900 rounded-t-lg p-4 pr-12 text-zinc-200">
+    <div class="relative shrink-0 border-b border-zinc-800 bg-zinc-900 rounded-t-lg p-4 pr-12 text-zinc-200">
+        <div class="flex items-center gap-1 mb-1 text-zinc-400">
+            <button type="button" data-list-handle aria-label="Drag list or use Alt+Left/Right to reorder" aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight" title="Drag to reorder; Alt+Left/Right to move" class="rounded px-2 py-1 cursor-grab active:cursor-grabbing hover:bg-zinc-800 focus-visible:outline focus-visible:outline-violet-500">⠿</button>
+            <button type="button" data-list-step="-1" aria-label="Move list left" title="Move list left" class="rounded px-2 py-1 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-violet-500">←</button>
+            <button type="button" data-list-step="1" aria-label="Move list right" title="Move list right" class="rounded px-2 py-1 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-violet-500">→</button>
+        </div>

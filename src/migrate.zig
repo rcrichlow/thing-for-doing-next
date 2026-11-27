@@ -149,6 +149,34 @@ test "applies pending migrations once, in order" {
     try std.testing.expectEqual(@as(i64, 3), try count.get(i64, 0));
 }
 
+test "list positions preserve existing creation order on upgrade" {
+    const pool = try db.testing.pool(1);
+    defer pool.deinit();
+    const conn = try pool.acquire();
+    defer conn.release();
+    const migrations = @import("migrations").all;
+    var diagnostics: Diagnostics = .{};
+    _ = try run(conn, migrations[0..4], &diagnostics);
+    _ = try conn.exec("INSERT INTO boards (title) VALUES ('One'), ('Two')", .{});
+    _ = try conn.exec("INSERT INTO lists (board_id, title) VALUES (1, 'A'), (2, 'X'), (1, 'B'), (2, 'Y')", .{});
+    _ = try run(conn, &migrations, &diagnostics);
+    var rows = try conn.query("SELECT board_id, title, position FROM lists ORDER BY board_id, position, id", .{});
+    defer rows.deinit();
+    const expected = [_]struct { board: i64, title: []const u8, position: i64 }{
+        .{ .board = 1, .title = "A", .position = 0 },
+        .{ .board = 1, .title = "B", .position = 1 },
+        .{ .board = 2, .title = "X", .position = 0 },
+        .{ .board = 2, .title = "Y", .position = 1 },
+    };
+    for (expected) |item| {
+        const row = (try rows.next()).?;
+        try std.testing.expectEqual(item.board, try row.get(i64, 0));
+        try std.testing.expectEqualStrings(item.title, try row.get([]const u8, 1));
+        try std.testing.expectEqual(item.position, try row.get(i64, 2));
+    }
+    try std.testing.expectEqual(null, try rows.next());
+}
+
 test "a failing migration is rolled back and stops the run" {
     const pool = try db.testing.pool(1);
     defer pool.deinit();

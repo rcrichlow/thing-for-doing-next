@@ -36,6 +36,7 @@ if it's actionable or not.
 - Edit and delete cards in a modal
 - Delete lists from the board UI, with optional card transfer to another list
 - Reorder cards within a list and move them across lists with drag-and-drop or keyboard shortcuts
+- Reorder lists with drag-and-drop, move buttons, or keyboard shortcuts
 
 ## Current Product Flow
 
@@ -64,7 +65,7 @@ The entry remains unchanged. Its content becomes the card title, with line break
 
 ### Board behavior
 
-- Lists appear in creation order, and cards appear in their saved order
+- Lists and cards appear in their saved order; new lists are appended
 - Card details open in a centered modal
 - Board titles are click-to-edit from the board header
 - List titles are click-to-edit from each list header
@@ -77,6 +78,7 @@ The entry remains unchanged. Its content becomes the card title, with line break
 - Archived boards can be unarchived from the archived boards page or from the archived board view
 - Archived boards remain editable, but cannot be selected as send-to-board destinations until unarchived
 - Cards can be moved with drag-and-drop or, when focused, with `Alt+Up/Down` and `Alt+Left/Right`
+- Lists can be dragged by their handle, moved with the arrow buttons, or moved with `Alt+Left/Right` when the handle is focused
 
 ## Stack
 
@@ -101,7 +103,7 @@ Docker keeps the database, compiler/runtime assumptions, and production-style im
 | Model | Description | Key Fields |
 |---|---|---|
 | Board | Container for lists | `title`, `archived_at` |
-| List | Column within a board, ordered by creation | `title`, `board_id` |
+| List | Column within a board | `title`, `position`, `board_id` |
 | Card | Task item within a list | `title`, `description`, `position`, `list_id` |
 | WorkingMemoryEntry | Quick capture item | `content` |
 

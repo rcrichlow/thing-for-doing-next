@@ -1,0 +1,6 @@
+<form id="list-move" hidden hx-put="/boards/{{board_id}}/list-order" hx-swap="none" hx-sync="this:queue all">
+    <input type="hidden" name="list_id">
+    <input type="hidden" name="anchor_id">
+    <input type="hidden" name="side">
+</form>
+<div id="list-move-status" role="status" class="sr-only" aria-live="polite"></div>

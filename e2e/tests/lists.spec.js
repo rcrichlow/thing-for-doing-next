@@ -139,3 +139,50 @@ test("board content uses the app's contained width and lists scroll within it", 
     expect(dimensions.documentWidth).toBe(width);
   }
 });
+
+test("list heights fit their cards independently and long lists scroll", async ({ page }) => {
+  const board = insertBoard("Different heights");
+  const empty = Number(runSql(`INSERT INTO lists (board_id, title) VALUES (${board}, 'Empty') RETURNING id`).trim());
+  const short = Number(runSql(`INSERT INTO lists (board_id, title) VALUES (${board}, 'Short') RETURNING id`).trim());
+  const long = Number(runSql(`INSERT INTO lists (board_id, title) VALUES (${board}, 'Long') RETURNING id`).trim());
+  runSql(`INSERT INTO cards (list_id, title, position) SELECT ${short}, 'Card ' || n, n FROM generate_series(1, 2) AS n`);
+  runSql(`INSERT INTO cards (list_id, title, position) SELECT ${long}, 'Card ' || n, n FROM generate_series(1, 30) AS n`);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await open(page, `/boards/${board}`);
+
+  const sizes = await page.evaluate(({ empty, short, long }) => {
+    const column = (/** @type {number} */ id) => {
+      const element = document.getElementById(`list-${id}`);
+      if (!element) throw new Error("Missing column");
+      return element;
+    };
+    const scroller = column(long).querySelector("[data-card-list]");
+    const boardLists = document.getElementById("board-lists");
+    if (!scroller || !boardLists) throw new Error("Missing scroller");
+    return {
+      empty: column(empty).getBoundingClientRect().height,
+      short: column(short).getBoundingClientRect().height,
+      long: column(long).getBoundingClientRect().height,
+      board: boardLists.getBoundingClientRect().height,
+      scrollHeight: scroller.scrollHeight,
+      clientHeight: scroller.clientHeight,
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+    };
+  }, { empty, short, long });
+  expect(sizes.empty).toBeLessThan(sizes.short);
+  expect(sizes.short).toBeLessThan(sizes.long);
+  expect(sizes.long).toBeLessThanOrEqual(sizes.board);
+  expect(sizes.scrollHeight).toBeGreaterThan(sizes.clientHeight);
+  expect(sizes.documentHeight).toBeLessThanOrEqual(sizes.viewportHeight);
+  await expect(page.locator(`#list-${long}`).getByTestId("add-card-btn")).toBeVisible();
+
+  const shortColumn = page.locator(`#list-${short}`);
+  await shortColumn.getByTestId("add-card-btn").click();
+  await shortColumn.getByTestId("card-title-input").fill("Another card");
+  await shortColumn.getByTestId("card-title-input").press("Enter");
+  await expect(shortColumn.getByTestId("card-item")).toHaveCount(3);
+  const newHeight = (await shortColumn.boundingBox())?.height;
+  expect(newHeight).toBeDefined();
+  expect(/** @type {number} */ (newHeight)).toBeGreaterThan(sizes.short);
+});

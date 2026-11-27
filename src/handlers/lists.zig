@@ -67,18 +67,33 @@ pub const Contents = struct {
 pub fn loadColumns(ctx: *Context, board_id: i64) ![]Column {
     const conn = try ctx.dbConn();
     const items = try lists.forBoard(conn, ctx.arena, board_id);
-    // Both queries are ordered by list id, so one pass groups the cards.
+    // Cards are ordered by list id, while columns follow list position.
     const all_cards = try cards.forBoard(conn, ctx.arena, board_id);
     const columns = try ctx.arena.alloc(Column, items.len);
-    var start: usize = 0;
     for (items, columns) |item, *column| {
-        while (start < all_cards.len and all_cards[start].list_id < item.id) start += 1;
+        var start: usize = 0;
+        var upper = all_cards.len;
+        while (start < upper) {
+            const middle = start + (upper - start) / 2;
+            if (all_cards[middle].list_id < item.id) start = middle + 1 else upper = middle;
+        }
         var end = start;
         while (end < all_cards.len and all_cards[end].list_id == item.id) end += 1;
         column.* = .{ .list = item, .cards = all_cards[start..end], .can_transfer = items.len > 1 };
-        start = end;
     }
     return columns;
+}
+
+/// PUT /boards/{id}/list-order: place a list before or after another list.
+pub fn reorder(ctx: *Context, id_text: []const u8) !void {
+    const board_id = http.parseId(id_text) orelse return missing(ctx);
+    const body = try ctx.readForm();
+    const list_id = http.parseId(body.get("list_id") orelse "") orelse return error.InvalidForm;
+    const anchor_id = http.parseId(body.get("anchor_id") orelse "") orelse return error.InvalidForm;
+    const side = body.get("side") orelse return error.InvalidForm;
+    const before = if (std.mem.eql(u8, side, "before")) true else if (std.mem.eql(u8, side, "after")) false else return error.InvalidForm;
+    if (!try lists.reorder(try ctx.dbConn(), board_id, list_id, anchor_id, before)) return missing(ctx);
+    return ctx.html(.ok, writeNothing, .{});
 }
 
 /// A single list with its cards, or null if the list does not exist.
@@ -551,5 +566,52 @@ test "a column can be re-rendered on its own, and a missing one renders as nothi
         try showColumn(&t.ctx, "9");
         try testing.expectEqual(@as(u16, 200), try t.status());
         try testing.expectEqualStrings("", try t.body());
+    }
+}
+
+test "list reorder endpoint preserves each column's cards" {
+    const pool = try boards.testPool();
+    defer pool.deinit();
+    {
+        const conn = try pool.acquire();
+        defer conn.release();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const board = try boards.create(conn, a, "Board");
+        const one = (try lists.create(conn, a, board.id, "One")).?;
+        const two = (try lists.create(conn, a, board.id, "Two")).?;
+        _ = try cards.create(conn, a, one.id, "First card");
+        _ = try cards.create(conn, a, two.id, "Second card");
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/boards/1/list-order", "list_id=2&anchor_id=1&side=before"), pool);
+        defer t.deinit();
+        try reorder(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init("GET /boards/1 HTTP/1.1\r\nHost: test\r\n\r\n", pool);
+        defer t.deinit();
+        const columns = try loadColumns(&t.ctx, 1);
+        try testing.expectEqual(@as(i64, 2), columns[0].list.id);
+        try testing.expectEqualStrings("Second card", columns[0].cards[0].title);
+        try testing.expectEqual(@as(i64, 1), columns[1].list.id);
+        try testing.expectEqualStrings("First card", columns[1].cards[0].title);
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/boards/1/list-order", "list_id=2&anchor_id=999&side=before"), pool);
+        defer t.deinit();
+        try reorder(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 404), try t.status());
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/boards/1/list-order", "list_id=2&anchor_id=1&side=invalid"), pool);
+        defer t.deinit();
+        try testing.expectError(error.InvalidForm, reorder(&t.ctx, "1"));
     }
 }

@@ -1,7 +1,7 @@
 /**
  * @file Application behaviour that HTMX attributes can't express. HTMX still
  * performs every request and swap; this script handles keyboard and focus
- * behaviour, dialogs, card drag and drop, and failure alerts. There is no
+ * behaviour, dialogs, card and list drag and drop, and failure alerts. There is no
  * build step: keep it dependency-free and document every function with JSDoc.
  *
  * Behaviour is attached through data attributes:
@@ -34,6 +34,8 @@
  *   keep the page's state: responses' updates to them are skipped. Once no
  *   card is moving, each skipped column is sent its `column-refresh` event,
  *   which fetches it again.
+ * - `data-list-handle` drags a column, or moves it with Alt+Left/Right;
+ *   `data-list-step` buttons also move it one place. `#list-move` saves it.
  */
 (() => {
   "use strict";
@@ -836,7 +838,7 @@
    * @returns {void}
    */
   function onCardPointerDown(event) {
-    if (press || !event.isPrimary || event.button !== 0) return;
+    if (press || listPress || !event.isPrimary || event.button !== 0) return;
     const target = event.target;
     const card = target instanceof Element ? target.closest("[data-card]") : null;
     if (!(card instanceof HTMLElement) || !listOf(card)) return;
@@ -963,6 +965,258 @@
     card.focus();
     card.scrollIntoView({ block: "nearest", inline: "nearest" });
     commitMove(card, from);
+  }
+
+  // --- List ordering --------------------------------------------------------
+
+  /**
+   * A list handle held by a pointer.
+   * @typedef {object} ListPress
+   * @property {string} id
+   * @property {number} pointerId
+   * @property {boolean} touch
+   * @property {number} startX
+   * @property {number} startY
+   * @property {number} x
+   * @property {number} y
+   * @property {number} [timer]
+   * @property {number} [frame]
+   * @property {boolean} dragging
+   * @property {string | null} anchor
+   * @property {boolean} before
+   */
+
+  /** @type {ListPress | null} */
+  let listPress = null;
+  /** @type {{ order: string[], title: string, position: number, total: number, ctx?: HtmxRequest } | null} */
+  let listMove = null;
+  /** Order to preserve across a board-contents swap while saving. @type {string[] | null} */
+  let listSwapOrder = null;
+
+  /** @returns {HTMLElement[]} The board's columns in their current order. */
+  function boardColumns() {
+    return /** @type {HTMLElement[]} */ ([...document.querySelectorAll("#board-lists > [data-list-column]")]);
+  }
+
+  /** @returns {string[]} Column IDs in their current order. */
+  function boardColumnIds() {
+    return boardColumns().map((column) => column.dataset.listColumn ?? "");
+  }
+
+  /**
+   * Restores known columns to an order, keeping newly created columns at the end.
+   * @param {string[]} ids
+   * @returns {void}
+   */
+  function orderColumns(ids) {
+    const container = document.getElementById("board-lists");
+    if (!container) return;
+    const columns = boardColumns();
+    const ordered = ids.map((id) => columns.find((column) => column.dataset.listColumn === id)).filter((column) => column !== undefined);
+    for (const column of columns) if (!ordered.includes(column)) ordered.push(column);
+    if (ordered.every((column, index) => column === columns[index])) return;
+    const focus = document.activeElement instanceof HTMLElement && container.contains(document.activeElement) ? document.activeElement : null;
+    const after = [...container.children].find((child) => !child.matches("[data-list-column]")) ?? null;
+    for (const column of ordered) container.insertBefore(column, after);
+    focus?.focus();
+  }
+
+  /**
+   * Moves a column next to an anchor and saves it. Only one list move can be
+   * pending, so a failed request can restore the prior order unambiguously.
+   * @param {string} id
+   * @param {string} anchorId
+   * @param {boolean} before
+   * @returns {void}
+   */
+  function moveColumn(id, anchorId, before) {
+    if (listMove || id === anchorId) return;
+    const columns = boardColumns();
+    const column = columns.find((item) => item.dataset.listColumn === id);
+    const anchor = columns.find((item) => item.dataset.listColumn === anchorId);
+    const form = document.getElementById("list-move");
+    if (!column || !anchor || !(form instanceof HTMLFormElement)) return;
+    const listField = form.elements.namedItem("list_id");
+    const anchorField = form.elements.namedItem("anchor_id");
+    const sideField = form.elements.namedItem("side");
+    if (!(listField instanceof HTMLInputElement) || !(anchorField instanceof HTMLInputElement) || !(sideField instanceof HTMLInputElement)) return;
+    const oldOrder = boardColumnIds();
+    const focus = document.activeElement instanceof HTMLElement && column.contains(document.activeElement) ? document.activeElement : null;
+    anchor.parentElement?.insertBefore(column, before ? anchor : anchor.nextSibling);
+    const nextOrder = boardColumnIds();
+    focus?.focus();
+    if (oldOrder.every((value, index) => value === nextOrder[index])) return;
+    column.scrollIntoView({ block: "nearest", inline: "nearest" });
+    listField.value = id;
+    anchorField.value = anchorId;
+    sideField.value = before ? "before" : "after";
+    listMove = { order: oldOrder, title: column.querySelector('[id^="list-title-"]')?.textContent?.trim() ?? "List", position: nextOrder.indexOf(id) + 1, total: nextOrder.length };
+    form.requestSubmit();
+  }
+
+  /**
+   * Moves a column one place left or right.
+   * @param {HTMLElement} column
+   * @param {number} step
+   * @returns {void}
+   */
+  function stepColumn(column, step) {
+    if (press || listPress) return;
+    const columns = boardColumns();
+    const other = columns[columns.indexOf(column) + step];
+    const id = column.dataset.listColumn;
+    const anchor = other?.dataset.listColumn;
+    if (id && anchor) moveColumn(id, anchor, step < 0);
+  }
+
+  /** @param {MouseEvent} event @returns {void} */
+  function onListStep(event) {
+    const target = event.target instanceof Element ? event.target.closest("[data-list-step]") : null;
+    const column = target?.closest("[data-list-column]");
+    if (target instanceof HTMLElement && column instanceof HTMLElement) stepColumn(column, Number(target.dataset.listStep));
+  }
+
+  /** @param {KeyboardEvent} event @returns {void} */
+  function onListKeydown(event) {
+    if (!(event.target instanceof HTMLElement) || !event.target.matches("[data-list-handle]") || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const column = event.target.closest("[data-list-column]");
+    if (column instanceof HTMLElement) stepColumn(column, event.key === "ArrowLeft" ? -1 : 1);
+  }
+
+  /** Clears the drag's highlighted drop target. @returns {void} */
+  function clearListTarget() {
+    for (const column of boardColumns()) delete column.dataset.listDropSide;
+  }
+
+  /** Finds and highlights the column under the pointer. @returns {void} */
+  function followListPointer() {
+    if (!listPress?.dragging) return;
+    clearListTarget();
+    const target = document.elementFromPoint(listPress.x, listPress.y)?.closest("[data-list-column]");
+    if (!(target instanceof HTMLElement) || target.dataset.listColumn === listPress.id) {
+      listPress.anchor = null;
+      return;
+    }
+    listPress.anchor = target.dataset.listColumn ?? null;
+    const rect = target.getBoundingClientRect();
+    listPress.before = listPress.x < rect.left + rect.width / 2;
+    target.dataset.listDropSide = listPress.before ? "before" : "after";
+  }
+
+  /** Scrolls the board while dragging near its edge. @returns {void} */
+  function scrollListDrag() {
+    if (!listPress?.dragging) return;
+    if (scrollNearEdge(document.querySelector("[data-board-scroll]"), listPress.x, "x")) followListPointer();
+    listPress.frame = requestAnimationFrame(scrollListDrag);
+  }
+
+  /** Starts a drag after the mouse threshold or touch hold. @returns {void} */
+  function startListDrag() {
+    if (!listPress || listPress.dragging) return;
+    listPress.dragging = true;
+    document.documentElement.dataset.draggingList = "";
+    getSelection()?.removeAllRanges();
+    followListPointer();
+    listPress.frame = requestAnimationFrame(scrollListDrag);
+  }
+
+  /** @param {PointerEvent} event @returns {void} */
+  function onListPointerDown(event) {
+    if (listPress || listMove || press || !event.isPrimary || event.button !== 0) return;
+    const handle = event.target instanceof Element ? event.target.closest("[data-list-handle]") : null;
+    const column = handle?.closest("[data-list-column]");
+    if (!(column instanceof HTMLElement) || !column.dataset.listColumn) return;
+    const { clientX: x, clientY: y } = event;
+    listPress = { id: column.dataset.listColumn, pointerId: event.pointerId, touch: event.pointerType === "touch", startX: x, startY: y, x, y, dragging: false, anchor: null, before: true };
+    if (listPress.touch) listPress.timer = setTimeout(startListDrag, TOUCH_DELAY_MS);
+  }
+
+  /** @param {PointerEvent} event @returns {void} */
+  function onListPointerMove(event) {
+    if (!listPress || listPress.pointerId !== event.pointerId) return;
+    listPress.x = event.clientX;
+    listPress.y = event.clientY;
+    if (!listPress.touch && event.buttons === 0) return endListPress(false);
+    if (listPress.dragging) return followListPointer();
+    const distance = Math.hypot(listPress.x - listPress.startX, listPress.y - listPress.startY);
+    if (listPress.touch && distance > TOUCH_TOLERANCE) endListPress(true);
+    else if (!listPress.touch && distance > DRAG_DISTANCE) startListDrag();
+  }
+
+  /** @param {boolean} cancelled @returns {void} */
+  function endListPress(cancelled) {
+    const current = listPress;
+    listPress = null;
+    if (!current) return;
+    clearTimeout(current.timer);
+    if (current.frame !== undefined) cancelAnimationFrame(current.frame);
+    delete document.documentElement.dataset.draggingList;
+    clearListTarget();
+    if (!cancelled && current.dragging && current.anchor) moveColumn(current.id, current.anchor, current.before);
+  }
+
+  /** @param {PointerEvent} event @returns {void} */
+  function onListPointerUp(event) {
+    if (listPress?.pointerId === event.pointerId) endListPress(false);
+  }
+
+  /** @param {PointerEvent} event @returns {void} */
+  function onListPointerCancel(event) {
+    if (listPress?.pointerId === event.pointerId) endListPress(true);
+  }
+
+  /** @param {KeyboardEvent} event @returns {void} */
+  function onListDragKeydown(event) {
+    if (listPress?.dragging && event.key === "Escape") {
+      event.preventDefault();
+      endListPress(true);
+    }
+  }
+
+  /** @param {TouchEvent} event @returns {void} */
+  function onListTouchMove(event) {
+    if (listPress?.dragging) event.preventDefault();
+  }
+
+  /** @param {Event} event @returns {void} */
+  function onListContextMenu(event) {
+    if (listPress?.touch) event.preventDefault();
+  }
+
+  /** @param {Event} event @returns {void} */
+  function onListRequestConfig(event) {
+    const ctx = htmxDetail(event).ctx;
+    if (listMove && ctx?.sourceElement?.id === "list-move") listMove.ctx = ctx;
+  }
+
+  /** Preserves optimistic order if an earlier create response replaces the board. @param {Event} event @returns {void} */
+  function onListBeforeSwap(event) {
+    if (!listMove) return;
+    const tasks = htmxDetail(event).tasks ?? [];
+    if (tasks.some((task) => task.target === "#board-lists" || task.target === document.getElementById("board-lists"))) listSwapOrder = boardColumnIds();
+  }
+
+  /** @returns {void} */
+  function onListAfterSwap() {
+    if (!listSwapOrder) return;
+    orderColumns(listSwapOrder);
+    listSwapOrder = null;
+  }
+
+  /** Restores the old order on any failure. @param {Event} event @returns {void} */
+  function onListRequestFinished(event) {
+    const ctx = htmxDetail(event).ctx;
+    if (!listMove || !ctx || listMove.ctx !== ctx) return;
+    const success = ctx.response && ctx.response.status >= 200 && ctx.response.status < 300;
+    if (!success) {
+      orderColumns(listMove.order);
+      showAlert();
+    }
+    const status = document.getElementById("list-move-status");
+    if (status) status.textContent = success ? `${listMove.title} moved to position ${listMove.position} of ${listMove.total}.` : "Could not move list. The previous order was restored.";
+    listMove = null;
   }
 
   /**
@@ -1195,4 +1449,18 @@
   document.addEventListener("htmx:before:swap", onColumnBeforeSwap);
   document.addEventListener("htmx:after:swap", onColumnAfterSwap);
   document.addEventListener("htmx:finally:request", onColumnRequestFinished);
+  document.addEventListener("pointerdown", onListPointerDown);
+  window.addEventListener("pointermove", onListPointerMove);
+  window.addEventListener("pointerup", onListPointerUp);
+  window.addEventListener("pointercancel", onListPointerCancel);
+  window.addEventListener("blur", () => endListPress(true));
+  document.addEventListener("keydown", onListDragKeydown);
+  document.addEventListener("keydown", onListKeydown);
+  document.addEventListener("click", onListStep);
+  document.addEventListener("touchmove", onListTouchMove, { passive: false });
+  document.addEventListener("contextmenu", onListContextMenu);
+  document.addEventListener("htmx:config:request", onListRequestConfig);
+  document.addEventListener("htmx:before:swap", onListBeforeSwap);
+  document.addEventListener("htmx:after:swap", onListAfterSwap);
+  document.addEventListener("htmx:finally:request", onListRequestFinished);
 })();
