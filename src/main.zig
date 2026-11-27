@@ -20,7 +20,7 @@ const pathParam = http.pathParam;
 
 const app_css = @embedFile("public/app.css");
 const app_js = @embedFile("public/app.js");
-const htmx_js = @embedFile("public/htmx-4.0.0-beta6.min.js");
+const htmx_js = @embedFile("public/htmx-4.0.2.min.js");
 
 /// Upper bound on concurrently running tasks. `Io.Threaded` applies this limit
 /// process-wide to every `concurrent` task, so it caps open connections and any
@@ -226,7 +226,7 @@ fn route(ctx: *Context) !void {
     // browsers that loaded it keep a stale copy for a year.
     if (std.mem.eql(u8, path, "/assets/styles.css")) return asset(ctx, app_css, "text/css; charset=utf-8", revalidate);
     if (std.mem.eql(u8, path, "/assets/app.js")) return asset(ctx, app_js, js_type, revalidate);
-    if (std.mem.eql(u8, path, "/assets/htmx-4.0.0-beta6.min.js")) return asset(ctx, htmx_js, js_type, immutable);
+    if (std.mem.eql(u8, path, "/assets/htmx-4.0.2.min.js")) return asset(ctx, htmx_js, js_type, immutable);
 
     if (std.mem.eql(u8, path, "/")) return switch (ctx.method) {
         .GET, .HEAD => working_memory.index(ctx),
