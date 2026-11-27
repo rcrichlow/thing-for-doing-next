@@ -5,9 +5,11 @@
 
 const std = @import("std");
 const db = @import("db.zig");
+const sql = @import("sql.zig");
 
 pub const Migration = @import("migrations").Migration;
 const log = std.log.scoped(.migrate);
+const q = sql.load(@embedFile("queries/migrate.sql"));
 
 /// Arbitrary key for `pg_advisory_lock`, serializing concurrent app starts.
 const lock_key: i64 = 0x7466_646e_6d69_6772; // "tfdnmigr"
@@ -47,15 +49,10 @@ pub fn run(conn: *db.Conn, migrations: []const Migration, diagnostics: *Diagnost
     diagnostics.* = .{};
     try validate(migrations);
 
-    _ = try conn.exec("SELECT pg_advisory_lock($1)", .{lock_key});
+    _ = try conn.exec(q.lock, .{lock_key});
     defer unlock(conn);
 
-    _ = try conn.exec(
-        \\CREATE TABLE IF NOT EXISTS schema_migrations (
-        \\  version text PRIMARY KEY,
-        \\  applied_at timestamptz NOT NULL DEFAULT now()
-        \\)
-    , .{});
+    _ = try conn.exec(q.create_table, .{});
 
     var applied_count: usize = 0;
     for (migrations) |migration| {
@@ -72,13 +69,13 @@ pub fn run(conn: *db.Conn, migrations: []const Migration, diagnostics: *Diagnost
 }
 
 fn unlock(conn: *db.Conn) void {
-    _ = conn.exec("SELECT pg_advisory_unlock($1)", .{lock_key}) catch |err| {
+    _ = conn.exec(q.unlock, .{lock_key}) catch |err| {
         log.warn("releasing migration lock failed: {t}", .{err});
     };
 }
 
 fn isApplied(conn: *db.Conn, version: []const u8) !bool {
-    var found = try conn.row("SELECT 1 FROM schema_migrations WHERE version = $1", .{version}) orelse return false;
+    var found = try conn.row(q.is_applied, .{version}) orelse return false;
     found.deinit() catch {};
     return true;
 }
@@ -86,7 +83,7 @@ fn isApplied(conn: *db.Conn, version: []const u8) !bool {
 fn apply(conn: *db.Conn, migration: Migration) !void {
     try conn.begin();
     _ = try conn.exec(migration.sql, .{});
-    _ = try conn.exec("INSERT INTO schema_migrations (version) VALUES ($1)", .{migration.version});
+    _ = try conn.exec(q.record, .{migration.version});
     try conn.commit();
 }
 

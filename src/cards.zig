@@ -1,8 +1,9 @@
-//! Cards: SQL and row mapping. Cards are ordered by `position` within their
+//! Cards: row mapping for `queries/cards.sql`. Cards are ordered by `position` within their
 //! list; new cards go at the end.
 
 const std = @import("std");
 const db = @import("db.zig");
+const sql = @import("sql.zig");
 const text = @import("text.zig");
 
 const Allocator = std.mem.Allocator;
@@ -26,21 +27,19 @@ pub fn normalizeDescription(arena: Allocator, raw: []const u8) Allocator.Error![
     return try text.multiline(arena, raw) orelse "";
 }
 
-const columns = "c.id, c.list_id, c.title, c.description";
-const order = " ORDER BY c.list_id, c.position, c.id";
+const q = sql.load(@embedFile("queries/cards.sql"));
 
 /// Every card on a board, grouped by list and in position order.
 pub fn forBoard(conn: *db.Conn, arena: Allocator, board_id: i64) Error![]Card {
-    return list(conn, arena, "SELECT " ++ columns ++
-        " FROM cards c JOIN lists l ON l.id = c.list_id WHERE l.board_id = $1" ++ order, .{board_id});
+    return list(conn, arena, q.for_board, .{board_id});
 }
 
 pub fn forList(conn: *db.Conn, arena: Allocator, list_id: i64) Error![]Card {
-    return list(conn, arena, "SELECT " ++ columns ++ " FROM cards c WHERE c.list_id = $1" ++ order, .{list_id});
+    return list(conn, arena, q.for_list, .{list_id});
 }
 
 pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?Card {
-    var row = try conn.row("SELECT " ++ columns ++ " FROM cards c WHERE c.id = $1", .{id}) orelse return null;
+    var row = try conn.row(q.find, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
@@ -48,34 +47,21 @@ pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?Card {
 /// Adds a card to the end of a list from a title already passed through
 /// `normalizeTitle`. Returns null if the list does not exist.
 pub fn create(conn: *db.Conn, arena: Allocator, list_id: i64, title: []const u8) WriteError!?Card {
-    var row = (conn.row(
-        \\INSERT INTO cards (list_id, title, position)
-        \\SELECT l.id, $2, coalesce((SELECT max(position) + 1 FROM cards WHERE list_id = l.id), 0)
-        \\FROM lists l WHERE l.id = $1
-        \\RETURNING id, list_id, title, description
-    , .{ list_id, title }) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.create, .{ list_id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Returns null if the card does not exist.
 pub fn updateTitle(conn: *db.Conn, arena: Allocator, id: i64, title: []const u8) WriteError!?Card {
-    var row = (conn.row(
-        \\UPDATE cards c SET title = $2,
-        \\    updated_at = CASE WHEN c.title = $2 THEN c.updated_at ELSE now() END
-        \\WHERE c.id = $1 RETURNING
-    ++ " " ++ columns, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.update_title, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Returns null if the card does not exist.
 pub fn updateDescription(conn: *db.Conn, arena: Allocator, id: i64, description: []const u8) Error!?Card {
-    var row = try conn.row(
-        \\UPDATE cards c SET description = $2,
-        \\    updated_at = CASE WHEN c.description = $2 THEN c.updated_at ELSE now() END
-        \\WHERE c.id = $1 RETURNING
-    ++ " " ++ columns, .{ id, description }) orelse return null;
+    var row = try conn.row(q.update_description, .{ id, description }) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
@@ -93,45 +79,15 @@ pub fn reorder(conn: *db.Conn, arena: Allocator, board_id: i64, list_id: i64, ca
     try conn.begin();
     errdefer conn.rollback() catch {};
     {
-        // Locking the board serializes reorders on it, and the list row
-        // keeps it from being deleted until the cards are in place.
-        var row = try conn.row(
-            "SELECT 1 FROM lists l JOIN boards b ON b.id = l.board_id WHERE l.id = $1 AND b.id = $2 FOR UPDATE",
-            .{ list_id, board_id },
-        ) orelse return error.InvalidTarget;
+        var row = try conn.row(q.lock_reorder_target, .{ list_id, board_id }) orelse return error.InvalidTarget;
         row.deinit() catch {};
     }
     const holding = try listsHolding(conn, arena, board_id, card_ids);
     var sources: std.ArrayList(i64) = .empty;
     for (holding) |id| if (id != list_id) try sources.append(arena, id);
-    _ = try conn.exec(
-        \\WITH wanted AS (
-        \\    SELECT DISTINCT ON (c.id) c.id, w.n
-        \\    FROM unnest($1::bigint[]) WITH ORDINALITY AS w(id, n)
-        \\    JOIN cards c ON c.id = w.id JOIN lists l ON l.id = c.list_id
-        \\    WHERE l.board_id = $3
-        \\    ORDER BY c.id, w.n
-        \\), ordered AS (
-        \\    SELECT id, (row_number() OVER (ORDER BY listed DESC, n, id) - 1)::integer AS position
-        \\    FROM (
-        \\        SELECT id, true AS listed, n FROM wanted
-        \\        UNION ALL
-        \\        SELECT id, false, position::bigint FROM cards
-        \\        WHERE list_id = $2 AND id NOT IN (SELECT id FROM wanted)
-        \\    ) cards_in_list
-        \\)
-        \\UPDATE cards c SET list_id = $2, position = o.position,
-        \\    updated_at = CASE WHEN c.list_id <> $2 THEN now() ELSE c.updated_at END
-        \\FROM ordered o
-        \\WHERE c.id = o.id AND (c.list_id <> $2 OR c.position <> o.position)
-    , .{ ids, list_id, board_id });
+    _ = try conn.exec(q.reorder, .{ ids, list_id, board_id });
     if (sources.items.len > 0) {
-        _ = try conn.exec(
-            \\UPDATE cards c SET position = o.position
-            \\FROM (SELECT id, (row_number() OVER (PARTITION BY list_id ORDER BY position, id) - 1)::integer AS position
-            \\      FROM cards WHERE list_id = ANY($1::bigint[])) o
-            \\WHERE c.id = o.id AND c.position <> o.position
-        , .{try arrayLiteral(arena, sources.items)});
+        _ = try conn.exec(q.renumber, .{try arrayLiteral(arena, sources.items)});
     }
     try conn.commit();
     return sources.items;
@@ -139,11 +95,7 @@ pub fn reorder(conn: *db.Conn, arena: Allocator, board_id: i64, list_id: i64, ca
 
 /// The lists on `board_id` that hold any of `card_ids`, in id order.
 pub fn listsHolding(conn: *db.Conn, arena: Allocator, board_id: i64, card_ids: []const i64) Error![]i64 {
-    var result = try conn.query(
-        \\SELECT DISTINCT c.list_id FROM cards c JOIN lists l ON l.id = c.list_id
-        \\WHERE c.id = ANY($1::bigint[]) AND l.board_id = $2
-        \\ORDER BY c.list_id
-    , .{ try arrayLiteral(arena, card_ids), board_id });
+    var result = try conn.query(q.lists_holding, .{ try arrayLiteral(arena, card_ids), board_id });
     defer result.deinit();
     const ids = try arena.alloc(i64, result.row_count);
     for (ids) |*id| id.* = try (try result.next()).?.get(i64, 0);
@@ -161,13 +113,13 @@ fn arrayLiteral(arena: Allocator, ids: []const i64) Allocator.Error![]const u8 {
 
 /// Returns the deleted card's list id, or null if it did not exist.
 pub fn delete(conn: *db.Conn, id: i64) Error!?i64 {
-    var row = try conn.row("DELETE FROM cards WHERE id = $1 RETURNING list_id", .{id}) orelse return null;
+    var row = try conn.row(q.delete, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try row.get(i64, 0);
 }
 
-fn list(conn: *db.Conn, arena: Allocator, comptime sql: [:0]const u8, args: anytype) Error![]Card {
-    var result = try conn.query(sql, args);
+fn list(conn: *db.Conn, arena: Allocator, comptime query: [:0]const u8, args: anytype) Error![]Card {
+    var result = try conn.query(query, args);
     defer result.deinit();
     const items = try arena.alloc(Card, result.row_count);
     for (items) |*item| item.* = try fromRow(arena, (try result.next()).?);

@@ -1,8 +1,9 @@
-//! Working-memory entries: SQL and row mapping. Handlers call these functions
-//! and never write SQL themselves.
+//! Working-memory entries: row mapping for `queries/working_memory.sql`.
+//! Handlers call these functions and never write SQL themselves.
 
 const std = @import("std");
 const db = @import("db.zig");
+const sql = @import("sql.zig");
 const text = @import("text.zig");
 
 const Allocator = std.mem.Allocator;
@@ -16,13 +17,11 @@ pub const Entry = struct {
 
 pub const Error = db.Error || db.ReadError;
 
-const columns =
-    \\id, content, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-;
+const q = sql.load(@embedFile("queries/working_memory.sql"));
 
 /// Returns entries newest first. Strings are copied into `arena`.
 pub fn list(conn: *db.Conn, arena: Allocator) Error![]Entry {
-    var result = try conn.query("SELECT " ++ columns ++ " FROM working_memory_entries ORDER BY id DESC", .{});
+    var result = try conn.query(q.list, .{});
     defer result.deinit();
     const entries = try arena.alloc(Entry, result.row_count);
     for (entries) |*entry| entry.* = try fromRow(arena, (try result.next()).?);
@@ -30,7 +29,7 @@ pub fn list(conn: *db.Conn, arena: Allocator) Error![]Entry {
 }
 
 pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?Entry {
-    var row = try conn.row("SELECT " ++ columns ++ " FROM working_memory_entries WHERE id = $1", .{id}) orelse return null;
+    var row = try conn.row(q.find, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
@@ -39,10 +38,7 @@ pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?Entry {
 /// Returns `error.BlankContent` if the database still considers it blank
 /// (e.g. only Unicode spaces).
 pub fn create(conn: *db.Conn, arena: Allocator, content: []const u8) (Error || error{BlankContent})!Entry {
-    var row = (conn.row(
-        "INSERT INTO working_memory_entries (content) VALUES ($1) RETURNING " ++ columns,
-        .{content},
-    ) catch |err| return blankOr(conn, err)).?;
+    var row = (conn.row(q.create, .{content}) catch |err| return blankOr(conn, err)).?;
     defer row.deinit() catch {};
     return fromRow(arena, row.row);
 }
@@ -50,25 +46,19 @@ pub fn create(conn: *db.Conn, arena: Allocator, content: []const u8) (Error || e
 /// Replaces an entry's content, leaving `updated_at` alone when the content is
 /// unchanged. Returns null if the entry does not exist.
 pub fn update(conn: *db.Conn, arena: Allocator, id: i64, content: []const u8) (Error || error{BlankContent})!?Entry {
-    var row = (conn.row(
-        \\UPDATE working_memory_entries
-        \\SET content = $2,
-        \\    updated_at = CASE WHEN content = $2 THEN updated_at ELSE now() END
-        \\WHERE id = $1
-        \\RETURNING
-    ++ " " ++ columns, .{ id, content }) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.update, .{ id, content }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Returns whether an entry was deleted.
 pub fn delete(conn: *db.Conn, id: i64) Error!bool {
-    const affected = try conn.exec("DELETE FROM working_memory_entries WHERE id = $1", .{id});
+    const affected = try conn.exec(q.delete, .{id});
     return (affected orelse 0) > 0;
 }
 
 pub fn deleteAll(conn: *db.Conn) Error!void {
-    _ = try conn.exec("DELETE FROM working_memory_entries", .{});
+    _ = try conn.exec(q.delete_all, .{});
 }
 
 /// Normalizes submitted content; see `text.multiline`.

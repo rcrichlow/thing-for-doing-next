@@ -1,6 +1,8 @@
-//! Board lists, shown in their persisted creation order.
+//! Board lists, shown in their persisted creation order: row mapping for
+//! `queries/lists.sql`.
 const std = @import("std");
 const db = @import("db.zig");
+const sql = @import("sql.zig");
 const text = @import("text.zig");
 const Allocator = std.mem.Allocator;
 
@@ -9,10 +11,10 @@ pub const Error = db.Error || db.ReadError;
 pub const WriteError = Error || error{BlankTitle};
 pub const normalizeTitle = text.line;
 
-const columns = "id, board_id, title";
+const q = sql.load(@embedFile("queries/lists.sql"));
 
 pub fn forBoard(conn: *db.Conn, arena: Allocator, board_id: i64) Error![]List {
-    var result = try conn.query("SELECT " ++ columns ++ " FROM lists WHERE board_id = $1 ORDER BY id", .{board_id});
+    var result = try conn.query(q.for_board, .{board_id});
     defer result.deinit();
     const items = try arena.alloc(List, result.row_count);
     for (items) |*item| item.* = try fromRow(arena, (try result.next()).?);
@@ -20,40 +22,33 @@ pub fn forBoard(conn: *db.Conn, arena: Allocator, board_id: i64) Error![]List {
 }
 
 pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?List {
-    var row = try conn.row("SELECT " ++ columns ++ " FROM lists WHERE id = $1", .{id}) orelse return null;
+    var row = try conn.row(q.find, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Returns null if the board no longer exists.
 pub fn create(conn: *db.Conn, arena: Allocator, board_id: i64, title: []const u8) WriteError!?List {
-    var row = (conn.row(
-        "INSERT INTO lists (board_id, title) SELECT id, $2 FROM boards WHERE id = $1 RETURNING " ++ columns,
-        .{ board_id, title },
-    ) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.create, .{ board_id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 pub fn rename(conn: *db.Conn, arena: Allocator, id: i64, title: []const u8) WriteError!?List {
-    var row = (conn.row(
-        \\UPDATE lists SET title = $2,
-        \\    updated_at = CASE WHEN title = $2 THEN updated_at ELSE now() END
-        \\WHERE id = $1 RETURNING
-    ++ " " ++ columns, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.rename, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Returns the deleted list's board id, or null if it did not exist.
 pub fn delete(conn: *db.Conn, id: i64) Error!?i64 {
-    var row = try conn.row("DELETE FROM lists WHERE id = $1 RETURNING board_id", .{id}) orelse return null;
+    var row = try conn.row(q.delete, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try row.get(i64, 0);
 }
 
 pub fn count(conn: *db.Conn, board_id: i64) Error!i64 {
-    var row = (try conn.row("SELECT count(*) FROM lists WHERE board_id = $1", .{board_id})).?;
+    var row = (try conn.row(q.count, .{board_id})).?;
     defer row.deinit() catch {};
     return row.get(i64, 0);
 }
@@ -68,7 +63,7 @@ pub fn deleteTransferring(conn: *db.Conn, id: i64, target_id: i64) TransferError
     errdefer conn.rollback() catch {};
 
     const board_id = blk: {
-        var row = try conn.row("SELECT board_id FROM lists WHERE id = $1 FOR UPDATE", .{id}) orelse {
+        var row = try conn.row(q.lock_for_transfer, .{id}) orelse {
             try conn.rollback();
             return null;
         };
@@ -76,19 +71,11 @@ pub fn deleteTransferring(conn: *db.Conn, id: i64, target_id: i64) TransferError
         break :blk try row.get(i64, 0);
     };
     {
-        var row = try conn.row(
-            "SELECT id FROM lists WHERE id = $1 AND board_id = $2 AND id <> $3 FOR UPDATE",
-            .{ target_id, board_id, id },
-        ) orelse return error.InvalidTransferTarget;
+        var row = try conn.row(q.lock_transfer_target, .{ target_id, board_id, id }) orelse return error.InvalidTransferTarget;
         row.deinit() catch {};
     }
-    _ = try conn.exec(
-        \\UPDATE cards c SET list_id = $2, position = base.next + ranked.n - 1, updated_at = now()
-        \\FROM (SELECT id, row_number() OVER (ORDER BY position, id) AS n FROM cards WHERE list_id = $1) ranked,
-        \\     (SELECT coalesce(max(position) + 1, 0) AS next FROM cards WHERE list_id = $2) base
-        \\WHERE c.id = ranked.id
-    , .{ id, target_id });
-    _ = try conn.exec("DELETE FROM lists WHERE id = $1", .{id});
+    _ = try conn.exec(q.transfer_cards, .{ id, target_id });
+    _ = try conn.exec(q.delete, .{id});
     try conn.commit();
     return board_id;
 }

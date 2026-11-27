@@ -1,8 +1,9 @@
-//! Boards: SQL and row mapping. Active boards are listed in creation order;
+//! Boards: row mapping for `queries/boards.sql`. Active boards are listed in creation order;
 //! archived boards most recently archived first.
 
 const std = @import("std");
 const db = @import("db.zig");
+const sql = @import("sql.zig");
 const text = @import("text.zig");
 
 const Allocator = std.mem.Allocator;
@@ -25,36 +26,31 @@ pub const WriteError = Error || error{BlankTitle};
 /// Normalizes a submitted title; see `text.line`.
 pub const normalizeTitle = text.line;
 
-fn iso(comptime column: []const u8) []const u8 {
-    return "to_char(" ++ column ++ " AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
-}
-
-const columns = "id, title, " ++ iso("created_at") ++ ", " ++ iso("archived_at");
+const q = sql.load(@embedFile("queries/boards.sql"));
 
 pub fn listActive(conn: *db.Conn, arena: Allocator) Error![]Board {
-    return list(conn, arena, "SELECT " ++ columns ++ " FROM boards WHERE archived_at IS NULL ORDER BY id");
+    return list(conn, arena, q.list_active);
 }
 
 pub fn listArchived(conn: *db.Conn, arena: Allocator) Error![]Board {
-    return list(conn, arena, "SELECT " ++ columns ++
-        " FROM boards WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, id DESC");
+    return list(conn, arena, q.list_archived);
 }
 
 pub fn countArchived(conn: *db.Conn) Error!i64 {
-    var row = (try conn.row("SELECT count(*) FROM boards WHERE archived_at IS NOT NULL", .{})).?;
+    var row = (try conn.row(q.count_archived, .{})).?;
     defer row.deinit() catch {};
     return row.get(i64, 0);
 }
 
 pub fn find(conn: *db.Conn, arena: Allocator, id: i64) Error!?Board {
-    var row = try conn.row("SELECT " ++ columns ++ " FROM boards WHERE id = $1", .{id}) orelse return null;
+    var row = try conn.row(q.find, .{id}) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
 
 /// Creates a board from a title already passed through `normalizeTitle`.
 pub fn create(conn: *db.Conn, arena: Allocator, title: []const u8) WriteError!Board {
-    var row = (conn.row("INSERT INTO boards (title) VALUES ($1) RETURNING " ++ columns, .{title}) catch |err|
+    var row = (conn.row(q.create, .{title}) catch |err|
         return blankOr(conn, err)).?;
     defer row.deinit() catch {};
     return fromRow(arena, row.row);
@@ -63,13 +59,7 @@ pub fn create(conn: *db.Conn, arena: Allocator, title: []const u8) WriteError!Bo
 /// Renames a board, leaving `updated_at` alone when the title is unchanged.
 /// Returns null if the board does not exist.
 pub fn rename(conn: *db.Conn, arena: Allocator, id: i64, title: []const u8) WriteError!?Board {
-    var row = (conn.row(
-        \\UPDATE boards
-        \\SET title = $2,
-        \\    updated_at = CASE WHEN title = $2 THEN updated_at ELSE now() END
-        \\WHERE id = $1
-        \\RETURNING
-    ++ " " ++ columns, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
+    var row = (conn.row(q.rename, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};
     return try fromRow(arena, row.row);
 }
@@ -77,24 +67,21 @@ pub fn rename(conn: *db.Conn, arena: Allocator, id: i64, title: []const u8) Writ
 /// Archives a board, keeping the original time if it is already archived.
 /// Returns whether the board exists.
 pub fn archive(conn: *db.Conn, id: i64) Error!bool {
-    return affected(try conn.exec(
-        "UPDATE boards SET archived_at = coalesce(archived_at, now()) WHERE id = $1",
-        .{id},
-    ));
+    return affected(try conn.exec(q.archive, .{id}));
 }
 
 /// Returns whether the board exists.
 pub fn unarchive(conn: *db.Conn, id: i64) Error!bool {
-    return affected(try conn.exec("UPDATE boards SET archived_at = NULL WHERE id = $1", .{id}));
+    return affected(try conn.exec(q.unarchive, .{id}));
 }
 
 /// Permanently deletes a board and everything on it. Returns whether it existed.
 pub fn delete(conn: *db.Conn, id: i64) Error!bool {
-    return affected(try conn.exec("DELETE FROM boards WHERE id = $1", .{id}));
+    return affected(try conn.exec(q.delete, .{id}));
 }
 
-fn list(conn: *db.Conn, arena: Allocator, comptime sql: [:0]const u8) Error![]Board {
-    var result = try conn.query(sql, .{});
+fn list(conn: *db.Conn, arena: Allocator, comptime query: [:0]const u8) Error![]Board {
+    var result = try conn.query(query, .{});
     defer result.deinit();
     const boards = try arena.alloc(Board, result.row_count);
     for (boards) |*board| board.* = try fromRow(arena, (try result.next()).?);

@@ -397,6 +397,7 @@ test {
     _ = layout;
     _ = migrate;
     _ = template;
+    _ = @import("sql.zig");
     _ = working_memory;
     _ = boards;
     _ = lists;
