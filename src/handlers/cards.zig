@@ -128,23 +128,50 @@ pub fn destroy(ctx: *Context, id_text: []const u8) !void {
     return ctx.html(.ok, writeDeleted, .{try list_handlers.loadColumn(ctx, list_id)});
 }
 
-/// PUT /cards/{id}/position (list_id, position): a drag-and-drop move. The
-/// page has already moved the card, so the response only re-renders the
-/// affected columns, keeping their counts and delete buttons current. A
-/// missing card, or a target list that is missing or on another board,
-/// answers 404, and the page undoes the move.
-pub fn move(ctx: *Context, id_text: []const u8) !void {
-    const id = http.parseId(id_text) orelse return missing(ctx);
+/// PUT /boards/{id}/card-order (list_id, from_list_id, then card_id for each
+/// card in the list's new order): sent by the board's card move form after a
+/// card is dropped or moved with the keyboard. `from_list_id` is the list the
+/// card left. The page has already moved the card, so the response
+/// re-renders that list, the list, and any other lists its cards came from,
+/// keeping their counts and delete buttons current. If the list is gone or
+/// not on the board, it answers 404 removing that column and re-rendering
+/// the lists the cards are really in.
+pub fn reorder(ctx: *Context, board_id_text: []const u8) !void {
+    const board_id = http.parseId(board_id_text) orelse return listMissing(ctx);
     const body = try ctx.readForm();
     const list_id = http.parseId(body.get("list_id") orelse "") orelse return error.InvalidForm;
-    const position = std.fmt.parseInt(i64, body.get("position") orelse "", 10) catch return error.InvalidForm;
-    const moved = cards.move(try ctx.dbConn(), id, list_id, position) catch |err| switch (err) {
-        error.InvalidTarget => return listMissing(ctx),
+    const from_list_id = http.parseId(body.get("from_list_id") orelse "") orelse return error.InvalidForm;
+    var card_ids: std.ArrayList(i64) = .empty;
+    for (body.fields) |field| {
+        if (!std.mem.eql(u8, field.name, "card_id")) continue;
+        try card_ids.append(ctx.arena, http.parseId(field.value) orelse return error.InvalidForm);
+    }
+    const conn = try ctx.dbConn();
+    const sources = cards.reorder(conn, ctx.arena, board_id, list_id, card_ids.items) catch |err| switch (err) {
+        error.InvalidTarget => {
+            const holding = try cards.listsHolding(conn, ctx.arena, board_id, card_ids.items);
+            const columns = try loadColumns(ctx, board_id, &.{ holding, &.{from_list_id} });
+            return ctx.html(.not_found, writeReordered, .{ list_id, columns });
+        },
         else => |e| return e,
-    } orelse return missing(ctx);
-    const from = try list_handlers.loadColumn(ctx, moved.from_list_id);
-    const to = if (moved.to_list_id == moved.from_list_id) null else try list_handlers.loadColumn(ctx, moved.to_list_id);
-    return ctx.html(.ok, writeMoved, .{ from, to });
+    };
+    const columns = try loadColumns(ctx, board_id, &.{ &.{ list_id, from_list_id }, sources });
+    return ctx.html(.ok, writeReordered, .{ null, columns });
+}
+
+/// The columns for each list in `groups`, once each, skipping lists that no
+/// longer exist or are on another board.
+fn loadColumns(ctx: *Context, board_id: i64, groups: []const []const i64) ![]Column {
+    var columns: std.ArrayList(Column) = .empty;
+    for (groups) |list_ids| for (list_ids) |list_id| {
+        for (columns.items) |column| {
+            if (column.list.id == list_id) break;
+        } else {
+            const column = try list_handlers.loadColumn(ctx, list_id) orelse continue;
+            if (column.list.board_id == board_id) try columns.append(ctx.arena, column);
+        }
+    };
+    return columns.items;
 }
 
 fn find(ctx: *Context, id_text: []const u8) !?Card {
@@ -193,9 +220,9 @@ fn writeDeleted(writer: *Io.Writer, column: ?Column) Io.Writer.Error!void {
     try list_handlers.writeCloseDialog(writer);
 }
 
-fn writeMoved(writer: *Io.Writer, from: ?Column, to: ?Column) Io.Writer.Error!void {
-    if (from) |c| try list_handlers.writeColumnUpdate(writer, c);
-    if (to) |c| try list_handlers.writeColumnUpdate(writer, c);
+fn writeReordered(writer: *Io.Writer, removed_list_id: ?i64, columns: []const Column) Io.Writer.Error!void {
+    if (removed_list_id) |id| try list_handlers.writeColumnRemoval(writer, id);
+    for (columns) |column| try list_handlers.writeColumnUpdate(writer, column);
 }
 
 fn writeTitle(writer: *Io.Writer, card: Card) Io.Writer.Error!void {
@@ -337,7 +364,7 @@ test "add a card, edit its details, and delete it" {
     }
 }
 
-test "moving a card re-renders the columns it left and joined" {
+test "reordering re-renders the list and the lists its cards came from" {
     const pool = try boards.testPool();
     defer pool.deinit();
     {
@@ -356,47 +383,63 @@ test "moving a card re-renders the columns it left and joined" {
     }
     {
         var t: http.TestRequest = undefined;
-        try t.init(formRequest("PUT", "/cards/2/position", "list_id=1&position=0"), pool);
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=1&from_list_id=1&card_id=2&card_id=1"), pool);
         defer t.deinit();
-        try move(&t.ctx, "2");
+        try reorder(&t.ctx, "1");
         try testing.expectEqual(@as(u16, 200), try t.status());
         const body = try t.body();
         try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
-        try testing.expect(!contains(body, "#list-2"));
+        try testing.expect(!contains(body, "#list-2\""));
         const second = std.mem.indexOf(u8, body, ">Second</span>").?;
         try testing.expect(second < std.mem.indexOf(u8, body, ">First</span>").?);
     }
     {
         var t: http.TestRequest = undefined;
-        try t.init(formRequest("PUT", "/cards/1/position", "list_id=2&position=5"), pool);
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=2&from_list_id=1&card_id=1"), pool);
         defer t.deinit();
-        try move(&t.ctx, "1");
+        try reorder(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+        const body = try t.body();
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
+        try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
+        try testing.expect(contains(body, "1 card<"));
+        try testing.expect(!contains(body, "hx-swap=\"delete\""));
+    }
+    {
+        // A card deleted elsewhere is ignored, and the list it was dragged
+        // from is still re-rendered.
+        var t: http.TestRequest = undefined;
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=2&from_list_id=1&card_id=99"), pool);
+        defer t.deinit();
+        try reorder(&t.ctx, "1");
         try testing.expectEqual(@as(u16, 200), try t.status());
         const body = try t.body();
         try testing.expect(contains(body, "hx-target=\"#list-1\" hx-swap=\"outerHTML\""));
         try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
-        try testing.expect(contains(body, "1 card<"));
-        try testing.expect(!contains(body, "<template hx type=\"partial\" hx-target=\"#modal-root\""));
     }
     {
-        // A list on another board is not a valid target.
+        // A list on another board: its column goes, and the card's real
+        // column is re-rendered.
         var t: http.TestRequest = undefined;
-        try t.init(formRequest("PUT", "/cards/1/position", "list_id=3&position=0"), pool);
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=3&from_list_id=2&card_id=1"), pool);
         defer t.deinit();
-        try move(&t.ctx, "1");
+        try reorder(&t.ctx, "1");
         try testing.expectEqual(@as(u16, 404), try t.status());
+        const body = try t.body();
+        try testing.expect(contains(body, "hx-target=\"#list-3\" hx-swap=\"delete\""));
+        try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
+        try testing.expect(contains(body, ">First</span>"));
     }
     {
         var t: http.TestRequest = undefined;
-        try t.init(formRequest("PUT", "/cards/99/position", "list_id=1&position=0"), pool);
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=1&from_list_id=1&card_id=x"), pool);
         defer t.deinit();
-        try move(&t.ctx, "99");
-        try testing.expectEqual(@as(u16, 404), try t.status());
+        try testing.expectError(error.InvalidForm, reorder(&t.ctx, "1"));
     }
     {
         var t: http.TestRequest = undefined;
-        try t.init(formRequest("PUT", "/cards/1/position", "list_id=1&position=x"), pool);
+        try t.init(formRequest("PUT", "/boards/1/card-order", "list_id=1&card_id=1"), pool);
         defer t.deinit();
-        try testing.expectError(error.InvalidForm, move(&t.ctx, "1"));
+        try testing.expectError(error.InvalidForm, reorder(&t.ctx, "1"));
     }
 }

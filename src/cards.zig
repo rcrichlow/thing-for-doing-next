@@ -80,85 +80,83 @@ pub fn updateDescription(conn: *db.Conn, arena: Allocator, id: i64, description:
     return try fromRow(arena, row.row);
 }
 
-/// The lists a moved card left and joined; the same list for a reorder.
-pub const Move = struct { from_list_id: i64, to_list_id: i64 };
+pub const ReorderError = Error || error{InvalidTarget};
 
-pub const MoveError = Error || error{InvalidTarget};
-
-/// Moves a card to `position` (0-based, clamped) among the other cards of
-/// `list_id`, which must be on the card's board, and renumbers the affected
-/// lists from 0. Returns null if the card does not exist.
-pub fn move(conn: *db.Conn, id: i64, list_id: i64, position: i64) MoveError!?Move {
-    while (true) {
-        try conn.begin();
-        errdefer conn.rollback() catch {};
-        const from_list_id = try lockForMove(conn, id, list_id) orelse {
-            try conn.rollback();
-            return null;
-        };
-        // The card moved while its lists were being locked.
-        if (from_list_id == 0) {
-            try conn.rollback();
-            continue;
-        }
-
-        _ = try conn.exec(
-            \\UPDATE cards c SET list_id = $2, position = o.position,
-            \\    updated_at = CASE WHEN c.id = $1 AND (c.list_id <> $2 OR c.position <> o.position)
-            \\        THEN now() ELSE c.updated_at END
-            \\FROM (
-            \\    SELECT id, (n + CASE WHEN n >= t.at THEN 1 ELSE 0 END)::integer AS position
-            \\    FROM (SELECT id, row_number() OVER (ORDER BY position, id) - 1 AS n
-            \\          FROM cards WHERE list_id = $2 AND id <> $1) others,
-            \\         (SELECT least(greatest($3::bigint, 0), count(*)) AS at
-            \\          FROM cards WHERE list_id = $2 AND id <> $1) t
-            \\    UNION ALL
-            \\    SELECT $1::bigint, least(greatest($3::bigint, 0), count(*))::integer
-            \\    FROM cards WHERE list_id = $2 AND id <> $1
-            \\) o
-            \\WHERE c.id = o.id
-        , .{ id, list_id, position });
-        if (from_list_id != list_id) {
-            _ = try conn.exec(
-                \\UPDATE cards c SET position = o.position
-                \\FROM (SELECT id, (row_number() OVER (ORDER BY position, id) - 1)::integer AS position
-                \\      FROM cards WHERE list_id = $1) o
-                \\WHERE c.id = o.id AND c.position <> o.position
-            , .{from_list_id});
-        }
-        try conn.commit();
-        return .{ .from_list_id = from_list_id, .to_list_id = list_id };
+/// Gives `list_id` the cards `card_ids`, in that order, as when a card is
+/// dropped into it. Listed cards from other lists on the board move into it;
+/// unknown cards, cards on other boards, and repeats are ignored, and cards
+/// already in the list but not listed keep their order after the rest. Every
+/// affected list is renumbered from 0. The list must be on `board_id`.
+/// Returns the other lists cards came from.
+pub fn reorder(conn: *db.Conn, arena: Allocator, board_id: i64, list_id: i64, card_ids: []const i64) ReorderError![]i64 {
+    const ids = try arrayLiteral(arena, card_ids);
+    try conn.begin();
+    errdefer conn.rollback() catch {};
+    {
+        // Locking the board serializes reorders on it, and the list row
+        // keeps it from being deleted until the cards are in place.
+        var row = try conn.row(
+            "SELECT 1 FROM lists l JOIN boards b ON b.id = l.board_id WHERE l.id = $1 AND b.id = $2 FOR UPDATE",
+            .{ list_id, board_id },
+        ) orelse return error.InvalidTarget;
+        row.deinit() catch {};
     }
+    const holding = try listsHolding(conn, arena, board_id, card_ids);
+    var sources: std.ArrayList(i64) = .empty;
+    for (holding) |id| if (id != list_id) try sources.append(arena, id);
+    _ = try conn.exec(
+        \\WITH wanted AS (
+        \\    SELECT DISTINCT ON (c.id) c.id, w.n
+        \\    FROM unnest($1::bigint[]) WITH ORDINALITY AS w(id, n)
+        \\    JOIN cards c ON c.id = w.id JOIN lists l ON l.id = c.list_id
+        \\    WHERE l.board_id = $3
+        \\    ORDER BY c.id, w.n
+        \\), ordered AS (
+        \\    SELECT id, (row_number() OVER (ORDER BY listed DESC, n, id) - 1)::integer AS position
+        \\    FROM (
+        \\        SELECT id, true AS listed, n FROM wanted
+        \\        UNION ALL
+        \\        SELECT id, false, position::bigint FROM cards
+        \\        WHERE list_id = $2 AND id NOT IN (SELECT id FROM wanted)
+        \\    ) cards_in_list
+        \\)
+        \\UPDATE cards c SET list_id = $2, position = o.position,
+        \\    updated_at = CASE WHEN c.list_id <> $2 THEN now() ELSE c.updated_at END
+        \\FROM ordered o
+        \\WHERE c.id = o.id AND (c.list_id <> $2 OR c.position <> o.position)
+    , .{ ids, list_id, board_id });
+    if (sources.items.len > 0) {
+        _ = try conn.exec(
+            \\UPDATE cards c SET position = o.position
+            \\FROM (SELECT id, (row_number() OVER (PARTITION BY list_id ORDER BY position, id) - 1)::integer AS position
+            \\      FROM cards WHERE list_id = ANY($1::bigint[])) o
+            \\WHERE c.id = o.id AND c.position <> o.position
+        , .{try arrayLiteral(arena, sources.items)});
+    }
+    try conn.commit();
+    return sources.items;
 }
 
-/// Locks the card's list and the target list, in id order as
-/// `lists.deleteTransferring` does, and then the card. Returns the card's
-/// list id, null if the card does not exist, or 0 if it changed lists
-/// before they were locked.
-fn lockForMove(conn: *db.Conn, id: i64, list_id: i64) MoveError!?i64 {
-    const from_list_id, const board_id = blk: {
-        var row = try conn.row(
-            "SELECT c.list_id, l.board_id FROM cards c JOIN lists l ON l.id = c.list_id WHERE c.id = $1",
-            .{id},
-        ) orelse return null;
-        defer row.deinit() catch {};
-        break :blk .{ try row.get(i64, 0), try row.get(i64, 1) };
-    };
-    {
-        var result = try conn.query(
-            "SELECT id, board_id FROM lists WHERE id IN ($1, $2) ORDER BY id FOR UPDATE",
-            .{ from_list_id, list_id },
-        );
-        defer result.deinit();
-        var target_ok = false;
-        while (try result.next()) |row| {
-            if (try row.get(i64, 0) == list_id and try row.get(i64, 1) == board_id) target_ok = true;
-        }
-        if (!target_ok) return error.InvalidTarget;
-    }
-    var row = try conn.row("SELECT list_id FROM cards WHERE id = $1 FOR UPDATE", .{id}) orelse return null;
-    defer row.deinit() catch {};
-    return if (try row.get(i64, 0) == from_list_id) from_list_id else 0;
+/// The lists on `board_id` that hold any of `card_ids`, in id order.
+pub fn listsHolding(conn: *db.Conn, arena: Allocator, board_id: i64, card_ids: []const i64) Error![]i64 {
+    var result = try conn.query(
+        \\SELECT DISTINCT c.list_id FROM cards c JOIN lists l ON l.id = c.list_id
+        \\WHERE c.id = ANY($1::bigint[]) AND l.board_id = $2
+        \\ORDER BY c.list_id
+    , .{ try arrayLiteral(arena, card_ids), board_id });
+    defer result.deinit();
+    const ids = try arena.alloc(i64, result.row_count);
+    for (ids) |*id| id.* = try (try result.next()).?.get(i64, 0);
+    return ids;
+}
+
+/// Formats ids as a PostgreSQL array literal, `{1,2,3}`.
+fn arrayLiteral(arena: Allocator, ids: []const i64) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.append(arena, '{');
+    for (ids, 0..) |id, i| try out.print(arena, "{s}{d}", .{ if (i == 0) "" else ",", id });
+    try out.append(arena, '}');
+    return out.items;
 }
 
 /// Returns the deleted card's list id, or null if it did not exist.
@@ -250,7 +248,7 @@ fn positions(conn: *db.Conn, a: Allocator, list_id: i64) ![]const u8 {
     return try a.dupe(u8, try (try result.next()).?.get([]const u8, 0));
 }
 
-test "moving cards reorders and renumbers the affected lists" {
+test "reordering sets a list's cards and renumbers the lists they left" {
     const boards = @import("boards.zig");
     const lists = @import("lists.zig");
     const pool = try boards.testPool();
@@ -267,33 +265,41 @@ test "moving cards reorders and renumbers the affected lists" {
     const one = (try create(conn, a, todo.id, "one")).?;
     const two = (try create(conn, a, todo.id, "two")).?;
     const three = (try create(conn, a, todo.id, "three")).?;
-    _ = (try create(conn, a, done.id, "shipped")).?;
+    const shipped = (try create(conn, a, done.id, "shipped")).?;
 
-    try testing.expectEqual(Move{ .from_list_id = todo.id, .to_list_id = todo.id }, (try move(conn, one.id, todo.id, 2)).?);
+    // Within a list.
+    try testing.expectEqual(@as(usize, 0), (try reorder(conn, a, board.id, todo.id, &.{ two.id, three.id, one.id })).len);
     try testing.expectEqualStrings("two three one", try titles(conn, a, todo.id));
-    _ = try move(conn, one.id, todo.id, 0);
-    try testing.expectEqualStrings("one two three", try titles(conn, a, todo.id));
 
-    try testing.expectEqual(Move{ .from_list_id = todo.id, .to_list_id = done.id }, (try move(conn, two.id, done.id, 0)).?);
-    try testing.expectEqualStrings("one three", try titles(conn, a, todo.id));
+    // Into another list, leaving a renumbered gap behind.
+    const sources = try reorder(conn, a, board.id, done.id, &.{ three.id, shipped.id });
+    try testing.expectEqualSlices(i64, &.{todo.id}, sources);
+    try testing.expectEqualStrings("three shipped", try titles(conn, a, done.id));
+    try testing.expectEqualStrings("two one", try titles(conn, a, todo.id));
     try testing.expectEqualStrings("0 1", try positions(conn, a, todo.id));
-    try testing.expectEqualStrings("two shipped", try titles(conn, a, done.id));
 
-    // Positions are clamped to the destination list.
-    _ = try move(conn, three.id, done.id, 99);
-    _ = try move(conn, one.id, done.id, -5);
-    try testing.expectEqualStrings("one two shipped three", try titles(conn, a, done.id));
-    try testing.expectEqualStrings("0 1 2 3", try positions(conn, a, done.id));
+    // Unlisted cards stay after the listed ones; unknown ids and repeats are
+    // ignored.
+    _ = try reorder(conn, a, board.id, done.id, &.{ one.id, one.id, 999 });
+    try testing.expectEqualStrings("one three shipped", try titles(conn, a, done.id));
+    try testing.expectEqualStrings("0 1 2", try positions(conn, a, done.id));
+    try testing.expectEqualStrings("two", try titles(conn, a, todo.id));
+
+    // Cards and lists on other boards are left alone.
+    const other_board = try boards.create(conn, a, "Other");
+    const elsewhere = (try lists.create(conn, a, other_board.id, "Elsewhere")).?;
+    const stranger = (try create(conn, a, elsewhere.id, "stranger")).?;
+    _ = try reorder(conn, a, board.id, todo.id, &.{ stranger.id, two.id });
+    try testing.expectEqualStrings("two", try titles(conn, a, todo.id));
+    try testing.expectEqualStrings("stranger", try titles(conn, a, elsewhere.id));
+    try testing.expectError(error.InvalidTarget, reorder(conn, a, board.id, elsewhere.id, &.{two.id}));
+    try testing.expectError(error.InvalidTarget, reorder(conn, a, board.id, elsewhere.id + 1000, &.{two.id}));
+    try testing.expectEqualStrings("two", try titles(conn, a, todo.id));
+
+    // Emptying a list.
+    _ = try reorder(conn, a, board.id, done.id, &.{ two.id, one.id, three.id, shipped.id });
     try testing.expectEqual(@as(usize, 0), (try forList(conn, a, todo.id)).len);
-
-    // Into an empty list, and the target must be a list on the same board.
-    _ = try move(conn, two.id, todo.id, 0);
-    try testing.expectEqualStrings("two", try titles(conn, a, todo.id));
-    const other = (try lists.create(conn, a, (try boards.create(conn, a, "Other")).id, "Elsewhere")).?;
-    try testing.expectError(error.InvalidTarget, move(conn, two.id, other.id, 0));
-    try testing.expectError(error.InvalidTarget, move(conn, two.id, other.id + 1000, 0));
-    try testing.expectEqualStrings("two", try titles(conn, a, todo.id));
-    try testing.expectEqual(null, try move(conn, three.id + 1000, todo.id, 0));
+    try testing.expectEqualStrings("two one three shipped", try titles(conn, a, done.id));
 }
 
 test "normalizeDescription trims and keeps blank as empty" {

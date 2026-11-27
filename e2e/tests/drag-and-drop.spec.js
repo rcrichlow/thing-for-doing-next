@@ -97,7 +97,7 @@ async function endOf(column) {
  * Waits for the card move request to finish.
  * @param {import("@playwright/test").Page} page
  */
-const moved = (page) => page.waitForResponse((response) => response.url().endsWith("/position"));
+const moved = (page) => page.waitForResponse((response) => response.url().endsWith("/card-order"));
 
 test("dragging a card to another list moves it and keeps its data", async ({ page }) => {
   const { board, lists } = insertBoardWithLists(["Backlog", "In Progress"]);
@@ -180,7 +180,7 @@ test("Escape cancels a drag, and a click without dragging still opens the card",
   await open(page, `/boards/${board}`);
   let requests = 0;
   page.on("request", (request) => {
-    if (request.url().endsWith("/position")) requests += 1;
+    if (request.url().endsWith("/card-order")) requests += 1;
   });
   const card = columns(page).first().getByTestId("card-item");
 
@@ -257,7 +257,7 @@ test("overlapping moves are applied in order without showing stale columns", asy
   /** @type {string[]} */
   const bodies = [];
   // Slow responses down so the moves overlap.
-  await page.route("**/position", async (route) => {
+  await page.route("**/card-order", async (route) => {
     bodies.push(route.request().postData() ?? "");
     await new Promise((resolve) => setTimeout(resolve, 200));
     await route.continue();
@@ -302,7 +302,7 @@ test.describe("when the server fails", () => {
     const { board, lists } = insertBoardWithLists(["Doing", "Done"]);
     insertCards(lists[0], ["Stuck"]);
     await open(page, `/boards/${board}`);
-    await page.route("**/position", (route) => route.fulfill({ status: 500, body: "" }));
+    await page.route("**/card-order", (route) => route.fulfill({ status: 500, body: "" }));
 
     await dragTo(page, columns(page).first().getByTestId("card-item"), await endOf(columns(page).nth(1)));
     await expect(page.locator("#app-alert")).toBeVisible();
@@ -310,4 +310,65 @@ test.describe("when the server fails", () => {
     await expect(columns(page).nth(1).getByTestId("card-item")).toHaveCount(0);
     expect(storedTitles(lists[0])).toEqual(["Stuck"]);
   });
+});
+
+test("a column skipped while a card was dragged in it is refreshed afterwards", async ({ page }) => {
+  const { board, lists } = insertBoardWithLists(["Doing", "Done"]);
+  insertCards(lists[0], ["A", "B", "C"]);
+  await open(page, `/boards/${board}`);
+  const [doing, done] = [columns(page).nth(0), columns(page).nth(1)];
+  await page.route("**/card-order", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.continue();
+  });
+
+  // A leaves Doing; B is picked up in Doing before the server answers.
+  await doing.getByTestId("card-item").filter({ hasText: "A" }).focus();
+  const response = moved(page);
+  await page.keyboard.press("Alt+ArrowRight");
+  await pickUp(page, doing.getByTestId("card-item").filter({ hasText: "B" }));
+  await response;
+  await expect(done).toContainText("1 card");
+  // Doing is left as the page has it while B is held.
+  await expect(doing).toContainText("3 cards");
+
+  const refreshed = page.waitForResponse((r) => r.url().endsWith(`/lists/${lists[0]}/column`));
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await refreshed;
+  await expect(doing).toContainText("2 cards");
+  await expect(doing.getByTestId("card-item")).toHaveText(["B", "C"]);
+});
+
+test.describe("when the list is gone", () => {
+  test.use({ allowedErrors: [/status of 404/] });
+
+  test("a card dropped on a list deleted elsewhere returns to its real list", async ({ page }) => {
+    const { board, lists } = insertBoardWithLists(["Doing", "Gone"]);
+    insertCards(lists[0], ["Stay"]);
+    await open(page, `/boards/${board}`);
+    runSql(`DELETE FROM lists WHERE id = ${lists[1]}`);
+
+    const response = moved(page);
+    await dragTo(page, columns(page).first().getByTestId("card-item"), await endOf(columns(page).nth(1)));
+    expect((await response).status()).toBe(404);
+    await expect(columns(page)).toHaveCount(1);
+    await expect(columns(page).first().getByTestId("card-item")).toHaveText(["Stay"]);
+    await expect(page.locator("#app-alert")).toBeHidden();
+    expect(storedTitles(lists[0])).toEqual(["Stay"]);
+  });
+});
+
+test("a card deleted elsewhere disappears when dropped", async ({ page }) => {
+  const { board, lists } = insertBoardWithLists(["Doing", "Done"]);
+  insertCards(lists[0], ["Keep", "Deleted"]);
+  await open(page, `/boards/${board}`);
+  runSql(`DELETE FROM cards WHERE title = 'Deleted'`);
+
+  const response = moved(page);
+  await dragTo(page, columns(page).first().getByTestId("card-item").filter({ hasText: "Deleted" }), await endOf(columns(page).nth(1)));
+  expect((await response).status()).toBe(200);
+  await expect(page.getByTestId("card-item")).toHaveText(["Keep"]);
+  await expect(columns(page).first()).toContainText("1 card");
+  await expect(columns(page).nth(1)).toContainText("No cards yet");
 });

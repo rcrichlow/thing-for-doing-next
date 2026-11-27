@@ -1,0 +1,9 @@
+<form
+    id="card-move"
+    hidden
+    hx-put="/boards/{{board_id}}/card-order"
+    hx-swap="none"
+    hx-sync="this:queue all">
+    <input type="hidden" name="list_id">
+    <input type="hidden" name="from_list_id">
+</form>

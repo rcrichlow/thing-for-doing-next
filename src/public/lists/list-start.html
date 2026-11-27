@@ -1,2 +1,10 @@
-<div id="list-{{id}}" data-testid="list-column" data-list-column class="group/list w-80 flex-shrink-0 bg-zinc-900 rounded-lg shadow-sm border border-zinc-800 flex flex-col max-h-full">
+<div
+    id="list-{{id}}"
+    data-testid="list-column"
+    data-list-column="{{id}}"
+    hx-get="/lists/{{id}}/column"
+    hx-trigger="column-refresh"
+    hx-swap="outerHTML"
+    hx-sync="#card-move:queue all"
+    class="group/list w-80 flex-shrink-0 bg-zinc-900 rounded-lg shadow-sm border border-zinc-800 flex flex-col max-h-full">
     <div class="relative border-b border-zinc-800 bg-zinc-900 rounded-t-lg p-4 pr-12 text-zinc-200">

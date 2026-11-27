@@ -39,6 +39,7 @@ const HeaderEnd = Tmpl("header-end");
 const Title = Tmpl("title");
 const TitleEdit = Tmpl("title-edit");
 const NotFound = Tmpl("not-found");
+const CardMoveForm = Tmpl("card-move-form");
 const Missing = Tmpl("missing");
 
 /// GET /boards
@@ -233,9 +234,11 @@ fn writeShow(writer: *Io.Writer, board: Board, columns: []const list_handlers.Co
     try writer.writeAll("<div class=\"flex-1 overflow-x-auto overflow-y-hidden p-6\" data-board-scroll>\n<div id=\"board-lists\" class=\"flex h-full gap-6\">\n");
     try list_handlers.writeContents(writer, .{ .board_id = board.id, .columns = columns });
     // Card details and list deletion dialogs are loaded into `#modal-root`.
-    // Card moves are issued from `#card-moves`, which queues them so the
-    // server applies them in order; it has no fields for HTMX to include.
-    try writer.writeAll("</div>\n</div>\n<div id=\"modal-root\"></div>\n<div id=\"card-moves\" hidden hx-sync=\"queue all\"></div>\n</div>\n");
+    try writer.writeAll("</div>\n</div>\n<div id=\"modal-root\"></div>\n");
+    // app.js submits this form after moving a card in the page.
+    var id: Id = .{};
+    try CardMoveForm.render(writer, .{ .board_id = id.of(board.id) });
+    try writer.writeAll("</div>\n");
 }
 
 /// The archived banner (if archived) and the header bar, wrapped in

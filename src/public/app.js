@@ -23,21 +23,32 @@
  * - `data-composer` (dialog): the working-memory composer; typing anywhere
  *   opens it.
  * - `data-card="id"` (card in a `[data-card-list="id"]` container, inside a
- *   `[data-list-column]`): dragged between and within lists, or moved with
- *   Alt+Arrow keys. Each move is shown at once and sent to
- *   `PUT /cards/{id}/position`, whose response re-renders the affected
- *   columns; a failed move is undone. Moves are issued from `#card-moves`
- *   (with `hx-sync="queue all"`). `[data-board-scroll]` scrolls while
- *   dragging near its edges, and `[data-no-cards]` hides while a card is
- *   over its list.
+ *   `[data-list-column="id"]` column): dragged between and within lists, or
+ *   moved with Alt+Arrow keys. Each move is shown at once, then the list's
+ *   new card order is put in the board's `#card-move` form, which is
+ *   submitted; its response re-renders the affected columns. A move the
+ *   server never saw (a network error or 5xx) is undone in the page.
+ *   `[data-board-scroll]` scrolls while dragging near its edges, and
+ *   `[data-no-cards]` hides while a card is over its list.
+ * - Columns with a card move pending, or with a card being dragged in them,
+ *   keep the page's state: responses' updates to them are skipped. Once no
+ *   card is moving, each skipped column is sent its `column-refresh` event,
+ *   which fetches it again.
  */
 (() => {
   "use strict";
 
   /**
+   * The parts of an HTMX 4 request context this script reads.
+   * @typedef {object} HtmxRequest
+   * @property {Element} [sourceElement] The element that issued the request.
+   * @property {{ status: number }} [response]
+   */
+
+  /**
    * The parts of an HTMX 4 event's `detail` this script reads.
    * @typedef {object} HtmxEventDetail
-   * @property {{ response?: { status: number }, cardMove?: CardMove }} [ctx] The request context.
+   * @property {HtmxRequest} [ctx] The request context.
    * @property {unknown} [error] Set on `htmx:error`.
    * @property {SwapTask[]} [tasks] Set on `htmx:before:swap`; may be edited.
    */
@@ -46,12 +57,6 @@
    * One swap of a response, such as a `<template hx type="partial">`.
    * @typedef {object} SwapTask
    * @property {Element | string | null} [target]
-   */
-
-  /**
-   * The parts of the HTMX API this script calls.
-   * @typedef {object} Htmx
-   * @property {(verb: string, path: string, context: object) => Promise<void>} ajax
    */
 
   /** A text field this script manages. @typedef {HTMLInputElement | HTMLTextAreaElement} TextField */
@@ -460,11 +465,15 @@
    */
 
   /**
-   * A move sent to the server that hasn't finished.
-   * @typedef {object} CardMove
-   * @property {HTMLElement} card
-   * @property {CardPlace} from Where to put the card back if the move fails.
-   * @property {string[]} listIds The lists it changes.
+   * An unfinished request that changes or re-renders columns: a card move
+   * (submitting `#card-move`) or a column refresh. Both use `#card-move`'s
+   * request queue, so the server handles them in the order they were made.
+   * @typedef {object} ColumnRequest
+   * @property {Element} source The element that issues it.
+   * @property {string[]} listIds The lists it changes or re-renders.
+   * @property {HtmxRequest} [ctx] Its HTMX request context, once issued.
+   * @property {{ cardId: string, from: CardPlace }} [move] Set for card
+   *   moves: where the card was, to put it back if the move isn't saved.
    */
 
   /**
@@ -495,23 +504,22 @@
 
   /** @type {Press | null} */
   let press = null;
-  /**
-   * Moves in the order they were sent. `#card-moves` queues them, so the
-   * server applies them in this order too.
-   * @type {CardMove[]}
-   */
-  const pendingMoves = [];
+  /** Column requests in the order they were made. @type {ColumnRequest[]} */
+  const columnRequests = [];
+  /** Lists whose columns skipped an update. @type {Set<string>} */
+  const staleLists = new Set();
   /** Set as a drag ends, so its trailing click doesn't open the card. */
   let suppressClick = false;
-  /** The card to refocus after a move response replaces it. @type {string | null} */
+  /** The card to refocus after a response replaces its column. @type {string | null} */
   let refocusCard = null;
 
   /**
-   * The HTMX API, loaded before this script.
-   * @returns {Htmx}
+   * The board's card move form, if this page has one.
+   * @returns {HTMLFormElement | null}
    */
-  function htmxApi() {
-    return /** @type {{ htmx: Htmx }} */ (/** @type {unknown} */ (window)).htmx;
+  function moveForm() {
+    const form = document.getElementById("card-move");
+    return form instanceof HTMLFormElement ? form : null;
   }
 
   /**
@@ -602,24 +610,57 @@
   }
 
   /**
-   * Sends a card's move from `from` to where it is now, unless it is back
-   * where it started. The response re-renders the affected columns.
+   * Saves a card's move from `from` to where it is now, unless it is back
+   * where it started, by submitting the list it is in, the list it left, and
+   * the new card order through the `#card-move` form. The response
+   * re-renders the affected columns.
    * @param {HTMLElement} card
    * @param {CardPlace} from
    * @returns {void}
    */
   function commitMove(card, from) {
     const to = placeOf(card);
-    if (!to || (to.listId === from.listId && to.index === from.index)) return;
-    /** @type {CardMove} */
-    const move = { card, from, listIds: [from.listId, to.listId] };
-    pendingMoves.push(move);
-    void htmxApi().ajax("PUT", `/cards/${card.dataset.card}/position`, {
-      source: "#card-moves",
-      swap: "none",
-      values: { list_id: to.listId, position: String(to.index) },
-      cardMove: move,
+    const list = listOf(card);
+    const form = moveForm();
+    const listField = form?.elements.namedItem("list_id");
+    const fromField = form?.elements.namedItem("from_list_id");
+    if (!to || !list || !form) return;
+    if (!(listField instanceof HTMLInputElement) || !(fromField instanceof HTMLInputElement)) return;
+    if (to.listId === from.listId && to.index === from.index) return;
+    listField.value = to.listId;
+    fromField.value = from.listId;
+    for (const field of form.querySelectorAll('input[name="card_id"]')) field.remove();
+    for (const other of cardsIn(list)) {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "card_id";
+      field.value = other.dataset.card ?? "";
+      form.append(field);
+    }
+    columnRequests.push({
+      source: form,
+      listIds: [from.listId, to.listId],
+      move: { cardId: card.dataset.card ?? "", from },
     });
+    // HTMX reads the fields now, so the form can be refilled for the next
+    // move while this one waits in the queue.
+    form.requestSubmit();
+  }
+
+  /**
+   * Once no card is moving or being dragged, sends `column-refresh` to each
+   * column that skipped an update, so it fetches the server's state.
+   * @returns {void}
+   */
+  function refreshStaleColumns() {
+    if (press?.drag || columnRequests.some((request) => request.move)) return;
+    for (const listId of staleLists) {
+      const column = document.querySelector(`[data-list-column="${CSS.escape(listId)}"]`);
+      if (!column) continue;
+      columnRequests.push({ source: column, listIds: [listId] });
+      column.dispatchEvent(new CustomEvent("column-refresh"));
+    }
+    staleLists.clear();
   }
 
   /**
@@ -786,6 +827,7 @@
     setTimeout(() => (suppressClick = false), 0);
     settleOverlay(drag.overlay, card);
     if (!cancelled && card.isConnected) commitMove(card, drag.from);
+    refreshStaleColumns();
   }
 
   /**
@@ -924,47 +966,65 @@
   }
 
   /**
-   * The pending card move an HTMX event belongs to, if any.
+   * The `detail` of an HTMX event.
    * @param {Event} event
-   * @returns {CardMove | undefined}
+   * @returns {HtmxEventDetail}
    */
-  function eventMove(event) {
-    return /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail?.ctx?.cardMove;
+  function htmxDetail(event) {
+    return /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail ?? {};
   }
 
   /**
-   * Before a move response re-renders its columns, skips columns that a
-   * later pending move (or the card being dragged) still changes; that
-   * move's response re-renders them. Notes the focused card, if replaced.
+   * Notes the HTMX request context of a column request as it is issued.
+   * @param {Event} event `htmx:config:request`
+   * @returns {void}
+   */
+  function onColumnRequestConfig(event) {
+    const ctx = htmxDetail(event).ctx;
+    const request = columnRequests.find((candidate) => !candidate.ctx && candidate.source === ctx?.sourceElement);
+    if (request && ctx) request.ctx = ctx;
+  }
+
+  /**
+   * Before any response updates columns, skips columns the page still owns:
+   * those a later card move changes (that move's response re-renders them)
+   * and the one a card is being dragged in. A response that isn't a column
+   * request may predate every pending move, so all of them count. Skipped
+   * columns are refreshed once no card is moving. Notes the focused card if
+   * its column is replaced.
    * @param {Event} event `htmx:before:swap`
    * @returns {void}
    */
-  function onMoveBeforeSwap(event) {
-    const move = eventMove(event);
-    const tasks = /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail?.tasks;
-    if (!move || !tasks) return;
-    const later = new Set(pendingMoves.slice(pendingMoves.indexOf(move) + 1).flatMap((other) => other.listIds));
+  function onColumnBeforeSwap(event) {
+    const { ctx, tasks } = htmxDetail(event);
+    if (!tasks) return;
+    const index = columnRequests.findIndex((request) => request.ctx === ctx);
+    const later = index < 0 ? columnRequests : columnRequests.slice(index + 1);
+    const owned = new Set(later.flatMap((request) => (request.move ? request.listIds : [])));
+    const dragged = press?.drag ? listOf(press.card)?.dataset.cardList : undefined;
+    if (dragged) owned.add(dragged);
     const focused = document.activeElement?.closest("[data-card]");
     for (let i = tasks.length - 1; i >= 0; i -= 1) {
       const target = tasks[i].target;
       const element = typeof target === "string" ? document.querySelector(target) : target;
-      if (!element) continue;
-      const listId = element.querySelector("[data-card-list]")?.getAttribute("data-card-list");
-      if ((listId && later.has(listId)) || (press?.drag && element.contains(press.card))) {
+      const listId = element?.getAttribute("data-list-column");
+      if (!element || !listId) continue;
+      if (owned.has(listId)) {
         tasks.splice(i, 1);
-      } else if (focused instanceof HTMLElement && element.contains(focused)) {
-        refocusCard = focused.dataset.card ?? null;
+        staleLists.add(listId);
+      } else {
+        staleLists.delete(listId);
+        if (focused instanceof HTMLElement && element.contains(focused)) refocusCard = focused.dataset.card ?? null;
       }
     }
   }
 
   /**
-   * Refocuses the card a move response replaced.
-   * @param {Event} event `htmx:after:swap`
+   * Refocuses a card whose column a response replaced.
    * @returns {void}
    */
-  function onMoveAfterSwap(event) {
-    if (!eventMove(event) || refocusCard === null) return;
+  function onColumnAfterSwap() {
+    if (refocusCard === null) return;
     const card = document.querySelector(`[data-card="${CSS.escape(refocusCard)}"]`);
     refocusCard = null;
     if (card instanceof HTMLElement && (document.activeElement === document.body || !document.activeElement)) {
@@ -973,19 +1033,27 @@
   }
 
   /**
-   * Forgets a finished move, and puts the card back if the server refused
-   * it or couldn't be reached. Server errors also show the alert.
+   * Forgets a finished column request. A move the server never saved (a
+   * network error or 5xx) puts the card back and has its lists refreshed;
+   * other refusals arrive as 4xx responses that re-render the columns.
+   * Then refreshes skipped columns if no card is moving.
    * @param {Event} event `htmx:finally:request`
    * @returns {void}
    */
-  function onMoveFinished(event) {
-    const move = eventMove(event);
-    if (!move) return;
-    pendingMoves.splice(pendingMoves.indexOf(move), 1);
-    const status = /** @type {CustomEvent<HtmxEventDetail>} */ (event).detail.ctx?.response?.status;
-    if (status !== undefined && status < 400) return;
-    const list = listById(move.from.listId);
-    if (list && move.card.isConnected) placeCard(move.card, list, move.from.index);
+  function onColumnRequestFinished(event) {
+    const ctx = htmxDetail(event).ctx;
+    const index = columnRequests.findIndex((request) => request.ctx === ctx);
+    if (index < 0) return;
+    const [request] = columnRequests.splice(index, 1);
+    const status = ctx?.response?.status;
+    if (request.move && (status === undefined || status >= 500)) {
+      const { cardId, from } = request.move;
+      const card = document.querySelector(`[data-card="${CSS.escape(cardId)}"]`);
+      const list = listById(from.listId);
+      if (card instanceof HTMLElement && list) placeCard(card, list, from.index);
+      for (const listId of request.listIds) staleLists.add(listId);
+    }
+    refreshStaleColumns();
   }
 
   // --- Request outcomes -----------------------------------------------------
@@ -1123,7 +1191,8 @@
   document.addEventListener("keydown", onCardKeydown);
   document.addEventListener("touchmove", onTouchMove, { passive: false });
   document.addEventListener("contextmenu", onCardContextMenu);
-  document.addEventListener("htmx:before:swap", onMoveBeforeSwap);
-  document.addEventListener("htmx:after:swap", onMoveAfterSwap);
-  document.addEventListener("htmx:finally:request", onMoveFinished);
+  document.addEventListener("htmx:config:request", onColumnRequestConfig);
+  document.addEventListener("htmx:before:swap", onColumnBeforeSwap);
+  document.addEventListener("htmx:after:swap", onColumnAfterSwap);
+  document.addEventListener("htmx:finally:request", onColumnRequestFinished);
 })();

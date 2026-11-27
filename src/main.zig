@@ -304,6 +304,11 @@ fn route(ctx: *Context) !void {
         else => ctx.methodNotAllowed("POST"),
     };
 
+    if (pathParam("/boards/{id}/card-order", path)) |id| return switch (ctx.method) {
+        .PUT => cards.reorder(ctx, id),
+        else => ctx.methodNotAllowed("PUT"),
+    };
+
     if (pathParam("/lists/{id}/edit", path)) |id| return switch (ctx.method) {
         .GET, .HEAD => lists.edit(ctx, id),
         else => ctx.methodNotAllowed(read_methods),
@@ -314,6 +319,11 @@ fn route(ctx: *Context) !void {
         .PUT => lists.rename(ctx, id),
         .DELETE => lists.destroy(ctx, id),
         else => ctx.methodNotAllowed("GET, HEAD, PUT, DELETE"),
+    };
+
+    if (pathParam("/lists/{id}/column", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => lists.showColumn(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
     };
 
     if (pathParam("/lists/{id}/delete", path)) |id| return switch (ctx.method) {
@@ -340,11 +350,6 @@ fn route(ctx: *Context) !void {
         .GET, .HEAD => cards.show(ctx, id),
         .DELETE => cards.destroy(ctx, id),
         else => ctx.methodNotAllowed("GET, HEAD, DELETE"),
-    };
-
-    if (pathParam("/cards/{id}/position", path)) |id| return switch (ctx.method) {
-        .PUT => cards.move(ctx, id),
-        else => ctx.methodNotAllowed("PUT"),
     };
 
     if (pathParam("/cards/{id}/title", path)) |id| return switch (ctx.method) {
@@ -468,6 +473,10 @@ test "list routes enforce methods" {
     try expectHeader(response, "allow: GET, HEAD\r\n");
     response = try testRequest("POST /lists/1/delete HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
     try expectHeader(response, "allow: GET, HEAD\r\n");
+    response = try testRequest("PUT /lists/1/column HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: GET, HEAD\r\n");
+    response = try testRequest("GET /boards/1/card-order HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
+    try expectHeader(response, "allow: PUT\r\n");
 }
 
 test "card routes enforce methods" {
@@ -480,8 +489,6 @@ test "card routes enforce methods" {
     try expectHeader(response, "allow: GET, HEAD, PUT\r\n");
     response = try testRequest("POST /cards/1/title/edit HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\n\r\n", &buffer);
     try expectHeader(response, "allow: GET, HEAD\r\n");
-    response = try testRequest("GET /cards/1/position HTTP/1.1\r\nHost: test\r\n\r\n", &buffer);
-    try expectHeader(response, "allow: PUT\r\n");
 }
 
 test "entry routes enforce methods and match ids" {

@@ -114,6 +114,15 @@ pub fn show(ctx: *Context, id_text: []const u8) !void {
     return ctx.html(.ok, writeTitle, .{item});
 }
 
+/// GET /lists/{id}/column: the whole column, which the board page fetches
+/// to catch up after skipping an update while cards were moving. A missing
+/// list answers 200 with nothing, removing the column.
+pub fn showColumn(ctx: *Context, id_text: []const u8) !void {
+    const id = http.parseId(id_text) orelse return ctx.html(.ok, writeNothing, .{});
+    const loaded = try loadColumn(ctx, id) orelse return ctx.html(.ok, writeNothing, .{});
+    return ctx.html(.ok, writeColumn, .{loaded});
+}
+
 /// GET /lists/{id}/edit
 pub fn edit(ctx: *Context, id_text: []const u8) !void {
     const item = try find(ctx, id_text) orelse return missing(ctx);
@@ -271,6 +280,13 @@ pub fn writeColumnUpdate(writer: *Io.Writer, column: Column) Io.Writer.Error!voi
     try writer.writeAll("</template>\n");
 }
 
+/// Removes a column from a response whose main content goes elsewhere.
+pub fn writeColumnRemoval(writer: *Io.Writer, list_id: i64) Io.Writer.Error!void {
+    try writer.print("<template hx type=\"partial\" hx-target=\"#list-{d}\" hx-swap=\"delete\"></template>\n", .{list_id});
+}
+
+fn writeNothing(_: *Io.Writer) Io.Writer.Error!void {}
+
 /// Removes any open dialog. Responses made only of partials skip their main
 /// swap, so removals are partials too.
 pub fn writeCloseDialog(writer: *Io.Writer) Io.Writer.Error!void {
@@ -280,7 +296,7 @@ pub fn writeCloseDialog(writer: *Io.Writer) Io.Writer.Error!void {
 /// Removes the deleted column, updates a column whose cards or delete button
 /// changed, and closes the delete dialog.
 fn writeRemoved(writer: *Io.Writer, removed_id: i64, update: ?Column) Io.Writer.Error!void {
-    try writer.print("<template hx type=\"partial\" hx-target=\"#list-{d}\" hx-swap=\"delete\"></template>\n", .{removed_id});
+    try writeColumnRemoval(writer, removed_id);
     if (update) |column| try writeColumnUpdate(writer, column);
     try writeCloseDialog(writer);
 }
@@ -501,5 +517,39 @@ test "lists with cards offer a transfer dialog only when another list exists" {
         try testing.expect(contains(body, "hx-target=\"#list-2\" hx-swap=\"outerHTML\""));
         try testing.expect(!contains(body, "hx-get=\"/lists/2/delete\""));
         try testing.expect(contains(body, "All cards in it will also be deleted."));
+    }
+}
+
+test "a column can be re-rendered on its own, and a missing one renders as nothing" {
+    const pool = try boards.testPool();
+    defer pool.deinit();
+    {
+        const conn = try pool.acquire();
+        defer conn.release();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const board = try boards.create(conn, a, "Board");
+        const todo = (try lists.create(conn, a, board.id, "To do")).?;
+        _ = try cards.create(conn, a, todo.id, "Card");
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init("GET /lists/1/column HTTP/1.1\r\nHost: test\r\n\r\n", pool);
+        defer t.deinit();
+        try showColumn(&t.ctx, "1");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+        const body = try t.body();
+        try testing.expect(std.mem.startsWith(u8, body, "<div\n    id=\"list-1\""));
+        try testing.expect(contains(body, "hx-trigger=\"column-refresh\""));
+        try testing.expect(contains(body, ">Card</span>"));
+    }
+    {
+        var t: http.TestRequest = undefined;
+        try t.init("GET /lists/9/column HTTP/1.1\r\nHost: test\r\n\r\n", pool);
+        defer t.deinit();
+        try showColumn(&t.ctx, "9");
+        try testing.expectEqual(@as(u16, 200), try t.status());
+        try testing.expectEqualStrings("", try t.body());
     }
 }
