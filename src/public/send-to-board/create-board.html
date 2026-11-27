@@ -1,0 +1,6 @@
+    <form class="order-2 mb-4 flex gap-2" data-require-field="title" hx-post="/entries/{{id}}/send/board" hx-target="#send-fields" hx-swap="outerHTML" hx-sync="#send-fields:drop">
+        <input name="title" value="{{title}}" placeholder="New board name" aria-label="New board name" data-testid="send-to-board-new-board-input" data-focus
+            class="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500">
+        <button type="submit" class="rounded-md bg-violet-600 px-3 py-2 text-sm text-white disabled:opacity-50">Create board</button>
+        <button type="button" hx-get="/entries/{{id}}/send/fields" hx-target="#send-fields" hx-swap="outerHTML" class="rounded-md border border-zinc-700 px-3 py-2 text-sm">Cancel</button>
+    </form>

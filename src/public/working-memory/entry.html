@@ -13,6 +13,13 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12m-9 0V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v11m4-11v11m5-11v11a2 2 0 01-2 2H8a2 2 0 01-2-2V7" />
                 </svg>
             </button>
+            <button type="button" aria-label="Send to board"
+                class="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-violet-900/20 hover:text-violet-400"
+                hx-get="/entries/{{id}}/send" hx-target="#modal-root" hx-swap="innerHTML">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+            </button>
         </div>
         <div class="min-w-0 flex-1" data-updated-at="{{updated_at}}">
             <button

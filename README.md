@@ -1,59 +1,149 @@
 # Thing for Doing Next
 
-An experimental personal application built to evaluate Zig, server-rendered HTML, HTMX, and PostgreSQL.
+Thing for Doing Next is an experimental rewrite of the personal productivity app in the adjacent
+`thing-for-doing` repository. It uses Zig, server-rendered HTML, HTMX, and PostgreSQL instead of the
+original Rails JSON API and React frontend. It is built around two connected workflows:
+
+- **Working Memory** for fast capture
+- **Boards** for organizing items into lists and cards
+
+The current app treats Working Memory as the default home experience. You can quickly capture
+thoughts, keep them in place, and optionally turn them into board cards without deleting the
+original entry.
+
+The idea behind working memory is to quickly capture thoughts and ideas so that you can move on to
+other things without losing them. It's not a TODO list at heart, but it can be used that way. Really,
+it's an "I don't want to lose the context that's currently in my head, so I will write down this
+random thought so I can stop thinking about it" list. Then you can return to it later and decide
+if it's actionable or not.
+
+## Current Features
+
+- Working Memory is the default landing flow
+- Keyboard-open working memory composer for fast capture
+- Inline editing for working memory entries
+- Per-entry working memory deletion
+- Multiline working memory entries with `Shift+Enter`
+- Clear all working memory entries in one action
+- Send a working memory entry to a board without removing the entry
+- Create boards from the boards page or inline during send-to-board
+- Edit board titles inline from the board page
+- Archive boards so they leave the main boards list without deleting their contents
+- Browse archived boards separately and unarchive them back into the main boards list
+- Delete boards from board-level archive/detail flows
+- Create lists inside a board or inline during send-to-board
+- Edit list titles inline from the board page
+- Create cards inside lists
+- Edit and delete cards in a modal
+- Delete lists from the board UI, with optional card transfer to another list
+- Reorder cards within a list and move them across lists with drag-and-drop or keyboard shortcuts
+
+## Current Product Flow
+
+- `/` shows working memory entries and a lightweight composer
+- `/boards` shows the board index and board creation flow
+- `/boards/archived` shows archived boards that have been removed from the main board index
+- `/boards/:id` shows a board with lists, cards, drag-and-drop, and card detail editing
+
+### Working Memory behavior
+
+- Typing anywhere outside form fields opens the composer
+- Working memory entries can be edited inline by clicking them
+- `Shift+Enter` inserts new lines and `Enter` submits
+- Individual entries and all entries can be deleted with confirmation
+- Clicking away saves an inline edit; saving empty text keeps the original
+- `Escape` or clicking outside closes the composer without saving
+- `Escape` cancels an inline edit
+- Entries can be sent to a board through a modal that supports:
+  - choosing an existing active board
+  - creating a new board inline
+  - choosing an existing list
+  - creating a new list inline
+  - previewing multiline entry text with preserved line breaks
+
+The entry remains unchanged. Its content becomes the card title, with line breaks flattened to spaces like other card titles.
+
+### Board behavior
+
+- Lists appear in creation order, and cards appear in their saved order
+- Card details open in a centered modal
+- Board titles are click-to-edit from the board header
+- List titles are click-to-edit from each list header
+- Card title and description are click-to-edit fields
+- Card details include a delete action with confirmation
+- Lists can be deleted from the board UI
+- Deleting a non-empty list can optionally transfer its cards to another list before deletion
+- Active boards are shown on `/boards`, while archived boards are hidden from that list and moved to `/boards/archived`
+- Archived boards keep their normal board detail page and show an archived indicator when viewed directly
+- Archived boards can be unarchived from the archived boards page or from the archived board view
+- Archived boards currently behave like regular boards aside from list placement and archived labeling
+- Cards can be moved with drag-and-drop or, when focused, with `Alt+Up/Down` and `Alt+Left/Right`
 
 ## Stack
 
-- Zig HTTP server with a libpq PostgreSQL client
+### Backend
+
+- Zig 0.16.0 HTTP server and libpq PostgreSQL client
 - PostgreSQL 17
-- Docker Compose for local development and deployment-like validation
-- HTMX 4.0.2, vendored locally and served as an embedded static asset
+- Docker Compose
 
-Docker is intentional here. It keeps the database, compiler/runtime assumptions, and production-style image build reproducible while the stack is being evaluated. The application image is a multi-stage build and does not include the Zig compiler at runtime.
+### Frontend
 
-## Development
+- Server-rendered HTML
+- HTMX 4.0.2
+- Tailwind CSS
+- Dependency-free JavaScript for page behavior and drag-and-drop
+- Playwright
+
+Docker keeps the database, compiler/runtime assumptions, and production-style image build reproducible while the stack is being evaluated. The multi-stage application image does not include the Zig compiler at runtime.
+
+## Data Model
+
+| Model | Description | Key Fields |
+|---|---|---|
+| Board | Container for lists | `title`, `archived_at` |
+| List | Column within a board | `title`, `position`, `board_id` |
+| Card | Task item within a list | `title`, `description`, `position`, `list_id` |
+| WorkingMemoryEntry | Quick capture item | `content` |
+
+## HTTP Routes
+
+The server renders full pages and HTMX fragments for working memory, boards, lists, and cards. See `src/main.zig` for the full route definitions. The health check is available at `/up`.
+
+## Local Development
+
+This project runs through Docker Compose. Start the development server with:
 
 ```bash
 mise run dev
 ```
 
-- App: `http://localhost:3000`
-- Health check: `http://localhost:3000/up`
-- PostgreSQL: `localhost:5433`
+### Notes
 
-The development container mounts the source tree. Changes to `src/` or `build.zig` rebuild and restart only the app process; the database container and application container remain running.
+- App runs on `http://localhost:3000`
+- Health check runs on `http://localhost:3000/up`
+- PostgreSQL is available on `localhost:5433`
+- Startup runs migrations automatically
+- The development container mounts the source tree; changes to `src/`, `migrations/`, or `build.zig` rebuild and restart only the app process
+- The development watcher rebuilds Tailwind CSS before recompiling the app
 
-The development watcher rebuilds Tailwind CSS from `src/` into `src/public/app.css` before recompiling the app. The generated stylesheet is embedded and served at `/assets/styles.css` with `Cache-Control: no-cache` so browsers revalidate it on each use. Don't serve it at `/assets/app.css`: an early build sent that URL with year-long immutable caching, so browsers that loaded it would keep using a stale copy.
+Build and run the production-style image with `mise run prod`. It shares the database and port 3000 with the development server, so run only one at a time. Stop services with `mise run down`; `docker compose down --volumes` also deletes local database data.
 
-HTMX is vendored in `src/public/htmx-4.0.2.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.2/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`. It is embedded directly as JavaScript and served at `/assets/htmx-4.0.2.min.js` with immutable caching. When upgrading HTMX, update the versioned filename, embedded asset route, and script URL together.
+## Verification Commands
 
-## HTTP Server Limits
-
-- At most 16 connections are served concurrently; further connections receive `503 Service Unavailable` and are closed.
-- Idle keep-alive connections are not timed out yet, so each holds a slot until the client closes it. Revisit before exposing the app beyond local use.
-- Request bodies are limited to 64 KiB and must be `application/x-www-form-urlencoded`, which matches HTMX's default encoding.
-
-## Production Image
-
-Build and run the production-style image with:
+Zig tests, including database integration tests against a separate `thing_for_doing_next_test` database:
 
 ```bash
-mise run prod
+mise run test
 ```
 
-Stop services with:
+Browser tests against an isolated server on port 3001 and a separate `thing_for_doing_next_e2e` database:
 
 ```bash
-mise run down
+mise run e2e
 ```
 
-To also delete local database data:
-
-```bash
-docker compose down --volumes
-```
-
-## Local Development Commands
+Arguments are passed to Playwright, e.g. `mise run e2e -- -g "boards"`. Tests use the system Chromium at `/usr/bin/chromium` (override with `CHROMIUM_PATH`) and need Node.js; npm dependencies are installed into `e2e/node_modules` on first run.
 
 With Zig 0.16.0 and libpq installed locally:
 
@@ -63,68 +153,45 @@ zig build
 DATABASE_URL=postgresql://thing_for_doing:thing_for_doing@localhost:5433/thing_for_doing_next zig build run
 ```
 
-Local `zig build test` skips database integration tests unless `TEST_DATABASE_URL` points at a database whose name ends in `_test`.
+Local `zig build test` skips database integration tests unless `TEST_DATABASE_URL` points at a database whose name ends in `_test`. The container image pins Zig 0.16.0; keep local Zig aligned before relying on local builds.
 
-The container image pins Zig 0.16.0. Keep local Zig aligned before relying on local builds.
+## Implementation Notes
 
-Run the test suite in the development container with:
+- Working Memory is the current home experience
+- Full pages use normal document navigation; HTMX handles page-local CRUD and partial updates
+- Card ordering is persisted through `position`; drag-and-drop updates the page immediately and submits the new order through an HTMX form
+- Pending card moves protect affected columns from being replaced until they can be refreshed
+- Board and list titles support inline editing from the board view
+- Working memory supports inline editing, per-entry deletion, and multiline content
+- The send-to-board dialog uses HTMX to update its picker and create boards, lists, and cards; it checks that the selected list still belongs to an active board
+- Board archive, unarchive, and deletion flows use confirmations or inline action affordances, and list deletion can transfer cards before removal
+- Tests include Zig tests and Playwright browser tests
+- The app requires `DATABASE_URL` and exits at startup if the database is unreachable or a migration fails; Compose sets it for both app services
+- Migrations in `migrations/*.sql` are embedded, applied in filename order at startup, and recorded in `schema_migrations`; add a new file rather than editing an applied migration
+- The libpq wrapper in `src/db.zig` is shaped like [pg.zig](https://github.com/karlseguin/pg.zig) so it can be replaced without changing callers
+- HTMX is vendored in `src/public/htmx-4.0.2.min.js` from [the pinned distribution](https://cdn.jsdelivr.net/npm/htmx.org@4.0.2/dist/htmx.min.js), with its license in `src/public/htmx-LICENSE.txt`; update the versioned filename, embedded asset route, and script URL together when upgrading
+- Generated CSS is served at `/assets/styles.css` with revalidation, not `/assets/app.css`, which an early build cached immutably
+- At most 16 connections are served concurrently; further connections receive `503 Service Unavailable`. Idle keep-alive connections are not timed out yet, so revisit this before exposing the app beyond local use
+- Request bodies are limited to 64 KiB and must be `application/x-www-form-urlencoded`
 
-```bash
-mise run test
-```
+## Future Enhancement Ideas
 
-## Working Memory
+These are ideas, not committed roadmap items.
 
-The home page lists working-memory entries, newest first.
-
-- Type anywhere on the page to open the composer. Enter saves, Shift+Enter adds a line, and Escape or clicking outside discards the draft.
-- Click an entry to edit it. Enter or clicking away saves, Escape cancels, and saving empty text keeps the original.
-- The trash icon deletes an entry and Clear All deletes every entry; both ask for confirmation.
-
-The keyboard behaviour is in `src/public/app.js`, a small dependency-free script with JSDoc types. HTMX makes every request.
-
-## Boards
-
-`/boards` lists active boards in creation order, with a tile for creating one. Archiving a board (with confirmation) moves it to `/boards/archived`, where it can be restored or permanently deleted. A board's page shows its title, which is edited in place (Enter or clicking away saves, Escape cancels), and actions to archive or delete it; archived boards show a banner instead and stay editable.
-
-Board pages follow the original app's board view: lists are columns in creation order, with titles edited in place and a delete button revealed on hover. A board with no lists shows a "Start your workflow" form; otherwise an add-list form follows the last list. Lists remain editable on archived boards, and deleting a board also deletes its lists and cards.
-
-Each list ends with "Add a card", which appends a card to the list. Clicking a card opens its details dialog, where the title and description are edited in place (the description is multiline and may be cleared) and the card can be deleted. Deleting a list with cards opens a dialog that can move them, in order, to the end of another list on the board, or delete them with it; the dialog is the only confirmation. Other list deletions ask for confirmation in the browser, warning when the list's cards will be deleted too.
-
-Cards are dragged within and between lists, as in the original app: a press becomes a drag after the pointer moves 8 pixels (or, on touch screens, after it is held still briefly), so clicking still opens the card. A lifted copy follows the pointer while the card's slot moves through the lists, the board and lists scroll near their edges, and Escape cancels. With a card focused, Alt+Up/Down moves it within its list and Alt+Left/Right moves it to the neighbouring list. Moves show immediately. As in HTMX's drag-to-reorder pattern, each one then submits the list's new card order through a hidden form on the board page (`PUT /boards/{id}/card-order`), and the server re-renders the affected columns from the database. Moves are saved in order; a move the server never saved (a network error or server error) is undone, and one it refuses, such as a drop on a list deleted in another tab, is corrected by its response. While a column has a move pending or a card being dragged in it, responses don't replace it; it is fetched again (`GET /lists/{id}/column`) once cards stop moving.
-
-Sending working-memory entries to a board is being built next.
-
-## Browser Tests
-
-```bash
-mise run e2e
-```
-
-Runs the Playwright tests in `e2e/` against a separate server on port 3001 backed by its own `thing_for_doing_next_e2e` database, so the dev server and its data are untouched. Arguments are passed to `playwright test`, e.g. `mise run e2e -- -g "boards"`. The tests use the system Chromium at `/usr/bin/chromium` (override with `CHROMIUM_PATH`) and need Node.js; their npm dependencies are installed into `e2e/node_modules` on first run.
-
-## Database
-
-The app requires `DATABASE_URL` (a libpq connection string or `postgresql://` URI) and exits at startup if the database is unreachable or a migration fails. Compose sets it for both app services.
-
-The PostgreSQL client is a thin libpq wrapper in `src/db.zig`, deliberately shaped like [pg.zig](https://github.com/karlseguin/pg.zig) so it can be replaced without changing callers.
-
-Migrations live in `migrations/*.sql`, are embedded into the binary at build time, and are applied in filename order on startup. Each migration runs in its own transaction and is recorded in `schema_migrations`. Migrations are forward-only; add a new file rather than editing an applied one.
-
-`mise run test` also runs database integration tests against a separate `thing_for_doing_next_test` database, which it creates when missing.
-
-## Product Direction
-
-This is a rewrite of the personal productivity app in the adjacent `thing-for-doing` repository. That application is the behavior reference, not an implementation dependency: it is a Rails JSON API with a React frontend, while this project is intentionally server-rendered Zig with HTMX.
-
-The target workflows are:
-
-- Working Memory as the default capture surface, with fast creation, inline editing, multiline entries, deletion, and sending an entry to a board without removing it.
-- Boards, lists, and cards, including inline titles, card details, archived boards, and list deletion with optional card transfer.
-- Drag-and-drop card reordering within and between lists.
-
-Working Memory, board management, lists, cards, and drag-and-drop are implemented. Use normal document navigation for the working-memory, boards, archived-boards, and board-detail pages. Use HTMX for page-local CRUD and partial updates. Drag-and-drop is a dependency-free section of `src/public/app.js` that moves cards in the page and submits each move through an HTMX form.
-
-## Inspiration
-
-The product is inspired by working-memory capture: record a thought quickly so it no longer needs to occupy attention, then later decide whether to organize it into actionable board work. The application should favor personal speed and low interaction overhead over feature breadth.
+- UI refresh with improved spacing, hierarchy, and visual consistency
+- Accessibility improvements across keyboard use, semantics, and screen reader support
+- Light mode or theme toggle
+- Better empty states
+- Global search across boards and cards
+- Labels or tags
+- Filtering tools
+- Keyboard shortcuts
+- Command palette for fast navigation and creation
+- Better card detail editing and visibility
+- Due dates and reminders
+- Recurring tasks
+- Completed-item views
+- Progress indicators at the list or board level
+- Activity history
+- Recent changes dashboard
+- Saved filters and smart views such as “My tasks” or “Due this week”

@@ -7,6 +7,7 @@ const migrate = @import("migrate.zig");
 const migrations = @import("migrations");
 const template = @import("template.zig");
 const boards = @import("handlers/boards.zig");
+const send_to_board = @import("handlers/send_to_board.zig");
 const lists = @import("handlers/lists.zig");
 const cards = @import("handlers/cards.zig");
 const working_memory = @import("handlers/working_memory.zig");
@@ -237,6 +238,24 @@ fn route(ctx: *Context) !void {
         .POST => working_memory.create(ctx),
         .DELETE => working_memory.clear(ctx),
         else => ctx.methodNotAllowed("POST, DELETE"),
+    };
+
+    if (pathParam("/entries/{id}/send", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => send_to_board.dialog(ctx, id),
+        .POST => send_to_board.send(ctx, id),
+        else => ctx.methodNotAllowed("GET, HEAD, POST"),
+    };
+    if (pathParam("/entries/{id}/send/fields", path)) |id| return switch (ctx.method) {
+        .GET, .HEAD => send_to_board.fields(ctx, id),
+        else => ctx.methodNotAllowed(read_methods),
+    };
+    if (pathParam("/entries/{id}/send/board", path)) |id| return switch (ctx.method) {
+        .POST => send_to_board.createBoard(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
+    };
+    if (pathParam("/entries/{id}/send/list", path)) |id| return switch (ctx.method) {
+        .POST => send_to_board.createList(ctx, id),
+        else => ctx.methodNotAllowed("POST"),
     };
 
     if (pathParam("/entries/{id}/edit", path)) |id| return switch (ctx.method) {

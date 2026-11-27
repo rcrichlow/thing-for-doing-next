@@ -27,3 +27,14 @@ DELETE FROM working_memory_entries WHERE id = $1;
 
 -- name: delete_all
 DELETE FROM working_memory_entries;
+
+-- name: send_to_board
+-- The entry and destination must still exist, and the list must belong to
+-- the selected active board. The normalized title is supplied by the caller.
+INSERT INTO cards (list_id, title, position)
+SELECT l.id, $4, coalesce((SELECT max(position) + 1 FROM cards WHERE list_id = l.id), 0)
+FROM working_memory_entries e
+JOIN boards b ON b.id = $2 AND b.archived_at IS NULL
+JOIN lists l ON l.board_id = b.id AND l.id = $3
+WHERE e.id = $1
+RETURNING id;

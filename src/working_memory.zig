@@ -61,6 +61,14 @@ pub fn deleteAll(conn: *db.Conn) Error!void {
     _ = try conn.exec(q.delete_all, .{});
 }
 
+/// Adds a card using a normalized entry title, only for an existing entry and
+/// a list on the selected active board. Returns false if the selection is stale.
+pub fn sendToBoard(conn: *db.Conn, entry_id: i64, board_id: i64, list_id: i64, title: []const u8) (Error || error{BlankContent})!bool {
+    var row = (conn.row(q.send_to_board, .{ entry_id, board_id, list_id, title }) catch |err| return blankOr(conn, err)) orelse return false;
+    defer row.deinit() catch {};
+    return true;
+}
+
 /// Normalizes submitted content; see `text.multiline`.
 pub const normalize = text.multiline;
 

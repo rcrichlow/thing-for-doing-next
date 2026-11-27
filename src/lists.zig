@@ -34,6 +34,13 @@ pub fn create(conn: *db.Conn, arena: Allocator, board_id: i64, title: []const u8
     return try fromRow(arena, row.row);
 }
 
+/// Like create, but only accepts an active board.
+pub fn createOnActiveBoard(conn: *db.Conn, arena: Allocator, board_id: i64, title: []const u8) WriteError!?List {
+    var row = (conn.row(q.create_on_active_board, .{ board_id, title }) catch |err| return blankOr(conn, err)) orelse return null;
+    defer row.deinit() catch {};
+    return try fromRow(arena, row.row);
+}
+
 pub fn rename(conn: *db.Conn, arena: Allocator, id: i64, title: []const u8) WriteError!?List {
     var row = (conn.row(q.rename, .{ id, title }) catch |err| return blankOr(conn, err)) orelse return null;
     defer row.deinit() catch {};

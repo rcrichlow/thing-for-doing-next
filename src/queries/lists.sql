@@ -13,6 +13,11 @@ INSERT INTO lists (board_id, title)
 SELECT id, $2 FROM boards WHERE id = $1
 RETURNING id, board_id, title;
 
+-- name: create_on_active_board
+INSERT INTO lists (board_id, title)
+SELECT id, $2 FROM boards WHERE id = $1 AND archived_at IS NULL
+RETURNING id, board_id, title;
+
 -- name: rename
 UPDATE lists
 SET title = $2,
