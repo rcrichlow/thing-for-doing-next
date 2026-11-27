@@ -1,5 +1,7 @@
 # Thing for Doing Next
 
+Licensed under the [MIT License](LICENSE).
+
 Thing for Doing Next is a personal productivity app built with Zig, server-rendered HTML, HTMX,
 and PostgreSQL. It is built around two connected workflows:
 
